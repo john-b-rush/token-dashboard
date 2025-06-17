@@ -218,44 +218,57 @@ fn render_stacked_bar(
     data: &DailyModelReport,
     is_tokens: bool,
 ) {
-    let mut totals: HashMap<String, Vec<(String, f64)>> = HashMap::new();
     let mut dates: Vec<String> = data.keys().cloned().collect();
     dates.sort();
-
-    for date in &dates {
-        for (model, stat) in data[date].iter() {
-            let entry = totals.entry(model.clone()).or_default();
-            entry.push((
-                date.clone(),
-                if is_tokens {
-                    stat.total_tokens as f64
-                } else {
-                    stat.total_cost
-                },
-            ));
-        }
+    
+    if dates.is_empty() {
+        return;
     }
 
-    let chart_data: Vec<(String, Vec<(f64, f64)>)> = totals
+    // Collect all unique models and sort them for consistent ordering
+    let mut all_models: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for models_map in data.values() {
+        for model in models_map.keys() {
+            all_models.insert(model.clone());
+        }
+    }
+    
+    let mut sorted_models: Vec<String> = all_models.into_iter().collect();
+    sorted_models.sort(); // Ensure consistent ordering
+    
+    // Create complete time series for each model (fill missing dates with 0)
+    let chart_data: Vec<(String, Vec<(f64, f64)>)> = sorted_models
         .into_iter()
-        .take(5)
-        .map(|(model, series)| {
-            let points: Vec<(f64, f64)> = series
+        .take(5) // Limit to 5 models for readability
+        .map(|model| {
+            let points: Vec<(f64, f64)> = dates
                 .iter()
                 .enumerate()
-                .map(|(i, (_d, v))| (i as f64, *v))
+                .map(|(i, date)| {
+                    let value = data.get(date)
+                        .and_then(|models| models.get(&model))
+                        .map(|stat| if is_tokens {
+                            stat.total_tokens as f64
+                        } else {
+                            stat.total_cost
+                        })
+                        .unwrap_or(0.0);
+                    (i as f64, value)
+                })
                 .collect();
             (model, points)
         })
         .collect();
 
+    let colors = [Color::Cyan, Color::Yellow, Color::Green, Color::Red, Color::Blue];
     let datasets: Vec<Dataset> = chart_data
         .iter()
-        .map(|(model, points)| {
+        .enumerate()
+        .map(|(i, (model, points))| {
             Dataset::default()
                 .name(normalize_model_name(model))
                 .marker(symbols::Marker::Block)
-                .style(Style::default().fg(Color::Cyan))
+                .style(Style::default().fg(colors[i % colors.len()]))
                 .data(points)
         })
         .collect();
