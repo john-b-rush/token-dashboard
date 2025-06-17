@@ -65,8 +65,8 @@ MODEL_PRICING = {
     },
     # OpenAI models (common ones used in goose)
     "GPT-4o": {
-        "input_tokens": 0.0025,
-        "output_tokens": 0.01,
+        "input_tokens": 0.005,
+        "output_tokens": 0.015,
         "input_tokens_batch": None,
         "output_tokens_batch": None,
         "input_tokens_cache_write": None,
@@ -81,12 +81,20 @@ MODEL_PRICING = {
         "input_tokens_cache_read": None,
     },
     "o3": {
-        "input_tokens": 0.06,  # Estimated pricing for o3
-        "output_tokens": 0.24,
+        "input_tokens": 0.015,  # Estimated pricing for o3
+        "output_tokens": 0.045,
         "input_tokens_batch": None,
         "output_tokens_batch": None,
         "input_tokens_cache_write": None,
-        "input_tokens_cache_read": None,
+        "input_tokens_cache_read": 0.0075,
+    },
+    "o4-mini": {
+        "input_tokens": 0.0003,
+        "output_tokens": 0.0012,
+        "input_tokens_batch": None,
+        "output_tokens_batch": None,
+        "input_tokens_cache_write": None,
+        "input_tokens_cache_read": 0.00015,
     },
 }
 

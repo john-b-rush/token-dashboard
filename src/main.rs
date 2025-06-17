@@ -267,7 +267,8 @@ fn render_stacked_bar(
         .map(|(i, (model, points))| {
             Dataset::default()
                 .name(normalize_model_name(model))
-                .marker(symbols::Marker::Block)
+                .marker(symbols::Marker::Braille)
+                .graph_type(ratatui::widgets::GraphType::Line)
                 .style(Style::default().fg(colors[i % colors.len()]))
                 .data(points)
         })
@@ -283,6 +284,37 @@ fn render_stacked_bar(
         }
     }
     
+    // Create X-axis labels (show select dates only)
+    let label_step = if dates.len() <= 10 { 2 } else { dates.len() / 5 };
+    let mut x_labels: Vec<Span> = Vec::new();
+    
+    for i in (0..dates.len()).step_by(label_step.max(1)) {
+        let date = &dates[i];
+        if date.len() >= 10 {
+            x_labels.push(Span::raw(format!("{}-{}", &date[5..7], &date[8..10])));
+        } else {
+            x_labels.push(Span::raw(date.clone()));
+        }
+    }
+
+    // Format Y-axis values
+    let y_max = max_val * 1.1;
+    let y_step = y_max / 5.0;
+    let y_labels: Vec<Span> = (0..6).map(|i| {
+        let value = i as f64 * y_step;
+        if is_tokens {
+            if value >= 1_000_000.0 {
+                Span::raw(format!("{:.1}M", value / 1_000_000.0))
+            } else if value >= 1_000.0 {
+                Span::raw(format!("{:.0}K", value / 1_000.0))
+            } else {
+                Span::raw(format!("{:.0}", value))
+            }
+        } else {
+            Span::raw(format!("${:.0}", value))
+        }
+    }).collect();
+
     let chart = Chart::new(datasets)
         .block(Block::default().borders(Borders::ALL).title(if is_tokens {
             "Tokens/day"
@@ -291,12 +323,19 @@ fn render_stacked_bar(
         }))
         .x_axis(
             Axis::default()
-                .title("Day")
-                .bounds([0.0, (dates.len().max(1) - 1) as f64]),
+                .title("Date")
+                .bounds([0.0, (dates.len().max(1) - 1) as f64])
+                .labels(x_labels),
         )
         .y_axis(Axis::default()
-            .title(if is_tokens { "Tokens" } else { "$" })
-            .bounds([0.0, max_val * 1.1]));
+            .title(if is_tokens { "Tokens" } else { "Cost" })
+            .bounds([0.0, y_max])
+            .labels(y_labels))
+        .legend_position(Some(ratatui::widgets::LegendPosition::TopLeft))
+        .hidden_legend_constraints((
+            ratatui::layout::Constraint::Ratio(1, 4),
+            ratatui::layout::Constraint::Ratio(1, 4),
+        ));
 
     f.render_widget(chart, area);
 }
@@ -339,22 +378,36 @@ fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport,
         .collect();
     let values: Vec<u64> = items.iter().map(|(_, v)| *v as u64).collect();
 
+    // Find max value for scaling
+    let max_val = values.iter().max().copied().unwrap_or(0) as f64;
+
     let bar_data: Vec<(&str, u64)> = labels
         .iter()
         .zip(values.iter())
         .map(|(s, v)| (s.content.as_ref(), *v))
         .collect();
+    
+    let title = if is_tokens {
+        format!("Today: Tokens by Model (Max: {})", 
+            if max_val >= 1_000_000.0 {
+                format!("{:.1}M", max_val / 1_000_000.0)
+            } else if max_val >= 1_000.0 {
+                format!("{:.0}K", max_val / 1_000.0)
+            } else {
+                format!("{:.0}", max_val)
+            }
+        )
+    } else {
+        format!("Today: Cost by Model (Max: ${:.0})", max_val)
+    };
+    
     let bars = BarChart::default()
-        .block(Block::default().borders(Borders::ALL).title(if is_tokens {
-            "Today: Tokens by Model"
-        } else {
-            "Today: Cost by Model"
-        }))
-        .bar_width(6)
-        .bar_gap(1)
-        .value_style(Style::default().fg(Color::Yellow))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .bar_width(10)
+        .bar_gap(3)
+        .value_style(Style::default().fg(Color::White).bg(Color::Black).add_modifier(ratatui::style::Modifier::BOLD))
         .label_style(Style::default().fg(Color::White))
-        .bar_style(Style::default().bg(Color::Blue))
+        .bar_style(Style::default().fg(if is_tokens { Color::Green } else { Color::Magenta }))
         .data(&bar_data);
 
     f.render_widget(bars, area);
@@ -382,22 +435,37 @@ fn render_recent_bar(f: &mut ratatui::Frame, area: Rect, data: &HashMap<String, 
         .collect();
     let values: Vec<u64> = items.iter().map(|(_, v)| *v as u64).collect();
 
+    // Find max value for scaling
+    let max_val = values.iter().max().copied().unwrap_or(0) as f64;
+
     let bar_data: Vec<(&str, u64)> = labels
         .iter()
         .zip(values.iter())
         .map(|(s, v)| (s.content.as_ref(), *v))
         .collect();
+    
+    let title = if is_tokens {
+        format!("{}: Tokens by Model (Max: {})", 
+            date,
+            if max_val >= 1_000_000.0 {
+                format!("{:.1}M", max_val / 1_000_000.0)
+            } else if max_val >= 1_000.0 {
+                format!("{:.0}K", max_val / 1_000.0)
+            } else {
+                format!("{:.0}", max_val)
+            }
+        )
+    } else {
+        format!("{}: Cost by Model (Max: ${:.0})", date, max_val)
+    };
+    
     let bars = BarChart::default()
-        .block(Block::default().borders(Borders::ALL).title(format!(
-            "{}: {} by Model", 
-            date, 
-            if is_tokens { "Tokens" } else { "Cost" }
-        )))
-        .bar_width(6)
-        .bar_gap(1)
-        .value_style(Style::default().fg(Color::Yellow))
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .bar_width(10)
+        .bar_gap(3)
+        .value_style(Style::default().fg(Color::White).bg(Color::Black).add_modifier(ratatui::style::Modifier::BOLD))
         .label_style(Style::default().fg(Color::White))
-        .bar_style(Style::default().bg(Color::Blue))
+        .bar_style(Style::default().fg(if is_tokens { Color::Green } else { Color::Magenta }))
         .data(&bar_data);
 
     f.render_widget(bars, area);
