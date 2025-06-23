@@ -38,6 +38,18 @@ struct ModelStats {
 
 type DailyModelReport = HashMap<String, HashMap<String, ModelStats>>; // date -> model -> stats
 
+fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000_000 {
+        format!("{:.1}B", tokens as f64 / 1_000_000_000.0)
+    } else if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.0}K", tokens as f64 / 1_000.0)
+    } else {
+        format!("{}", tokens)
+    }
+}
+
 fn normalize_model_name(model: &str) -> String {
     let model_lower = model.to_lowercase();
     
@@ -158,7 +170,7 @@ fn draw_ui<B: ratatui::backend::Backend>(
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([Constraint::Length(7), Constraint::Min(0)])
             .split(full);
 
         let summary_block = Block::default()
@@ -167,21 +179,69 @@ fn draw_ui<B: ratatui::backend::Backend>(
 
         let mut lifetime_cost = 0.0;
         let mut mtd_cost = 0.0;
+        let mut today_cost = 0.0;
+        
+        let mut lifetime_input = 0u64;
+        let mut lifetime_output = 0u64;
+        let mut lifetime_cache_read = 0u64;
+        let mut lifetime_cache_write = 0u64;
+        
+        let mut _mtd_input = 0u64;
+        let mut _mtd_output = 0u64;
+        let mut _mtd_cache_read = 0u64;
+        let mut _mtd_cache_write = 0u64;
+        
+        let mut today_input = 0u64;
+        let mut today_output = 0u64;
+        let mut today_cache_read = 0u64;
+        let mut today_cache_write = 0u64;
+        
         let today = Utc::now().naive_utc().date();
+        let today_str = today.format("%Y-%m-%d").to_string();
         let this_month = today.format("%Y-%m").to_string();
 
         for (date, model_map) in data.iter() {
             for (_model, stat) in model_map.iter() {
+                // Lifetime totals
                 lifetime_cost += stat.total_cost;
+                lifetime_input += stat.input_tokens;
+                lifetime_output += stat.output_tokens;
+                lifetime_cache_read += stat.cache_read_tokens;
+                lifetime_cache_write += stat.cache_creation_tokens;
+                
+                // Month-to-date
                 if date.starts_with(&this_month) {
                     mtd_cost += stat.total_cost;
+                    _mtd_input += stat.input_tokens;
+                    _mtd_output += stat.output_tokens;
+                    _mtd_cache_read += stat.cache_read_tokens;
+                    _mtd_cache_write += stat.cache_creation_tokens;
+                }
+                
+                // Today
+                if date == &today_str {
+                    today_cost += stat.total_cost;
+                    today_input += stat.input_tokens;
+                    today_output += stat.output_tokens;
+                    today_cache_read += stat.cache_read_tokens;
+                    today_cache_write += stat.cache_creation_tokens;
                 }
             }
         }
 
         let summary_text = Paragraph::new(format!(
-            "Lifetime: ${:.2}    MTD: ${:.2}",
-            lifetime_cost, mtd_cost
+            "Lifetime Spend   ${:.2}\nLifetime Tokens  {}/{} ({}/{})\nMonth-to-Date    ${:.2}\nToday's Spend    ${:.2}\nToday's Tokens   {}/{} ({}/{})",
+            lifetime_cost,
+            format_tokens(lifetime_input),
+            format_tokens(lifetime_output),
+            format_tokens(lifetime_cache_read),
+            format_tokens(lifetime_cache_write),
+            mtd_cost,
+            today_cost,
+            format_tokens(today_input),
+            format_tokens(today_output),
+            format_tokens(today_cache_read),
+            format_tokens(today_cache_write)
         ))
         .block(summary_block)
         .style(Style::default().fg(Color::Green));
@@ -225,28 +285,32 @@ fn render_stacked_bar(
         return;
     }
 
-    // Collect all unique models and sort them for consistent ordering
-    let mut all_models: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Collect all unique models and calculate their total spend
+    let mut model_totals: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for models_map in data.values() {
-        for model in models_map.keys() {
-            all_models.insert(model.clone());
+        for (model, stats) in models_map.iter() {
+            *model_totals.entry(model.clone()).or_insert(0.0) += stats.total_cost;
         }
     }
     
-    let mut sorted_models: Vec<String> = all_models.into_iter().collect();
-    sorted_models.sort(); // Ensure consistent ordering
+    // Sort models by total spend (descending)
+    let mut sorted_models: Vec<String> = model_totals.keys().cloned().collect();
+    sorted_models.sort_by(|a, b| {
+        model_totals.get(b).unwrap_or(&0.0)
+            .partial_cmp(model_totals.get(a).unwrap_or(&0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     
-    // Create complete time series for each model (fill missing dates with 0)
+    // Create complete time series for ALL models
     let chart_data: Vec<(String, Vec<(f64, f64)>)> = sorted_models
-        .into_iter()
-        .take(5) // Limit to 5 models for readability
+        .iter() // Use iter instead of into_iter to keep sorted_models
         .map(|model| {
             let points: Vec<(f64, f64)> = dates
                 .iter()
                 .enumerate()
                 .map(|(i, date)| {
                     let value = data.get(date)
-                        .and_then(|models| models.get(&model))
+                        .and_then(|models| models.get(model))
                         .map(|stat| if is_tokens {
                             stat.total_tokens as f64
                         } else {
@@ -256,13 +320,18 @@ fn render_stacked_bar(
                     (i as f64, value)
                 })
                 .collect();
-            (model, points)
+            (model.clone(), points)
         })
         .collect();
 
-    let colors = [Color::Cyan, Color::Yellow, Color::Green, Color::Red, Color::Blue];
+
+    let colors = [Color::Cyan, Color::Yellow, Color::Green, Color::Red, Color::Blue, 
+                  Color::Magenta, Color::LightCyan, Color::LightYellow];
+    
+    // Create datasets - simple approach, just top 5 with names
     let datasets: Vec<Dataset> = chart_data
         .iter()
+        .take(5) // Only show top 5 in chart for now to debug legend
         .enumerate()
         .map(|(i, (model, points))| {
             Dataset::default()
@@ -317,9 +386,9 @@ fn render_stacked_bar(
 
     let chart = Chart::new(datasets)
         .block(Block::default().borders(Borders::ALL).title(if is_tokens {
-            "Tokens/day"
+            "Tokens/day (Top 5)"
         } else {
-            "Cost/day ($)"
+            "Cost/day ($) (Top 5)"
         }))
         .x_axis(
             Axis::default()
@@ -331,11 +400,7 @@ fn render_stacked_bar(
             .title(if is_tokens { "Tokens" } else { "Cost" })
             .bounds([0.0, y_max])
             .labels(y_labels))
-        .legend_position(Some(ratatui::widgets::LegendPosition::TopLeft))
-        .hidden_legend_constraints((
-            ratatui::layout::Constraint::Ratio(1, 4),
-            ratatui::layout::Constraint::Ratio(1, 4),
-        ));
+        .legend_position(Some(ratatui::widgets::LegendPosition::TopLeft));
 
     f.render_widget(chart, area);
 }
@@ -345,14 +410,8 @@ fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport,
     let today_data = match data.get(&today) {
         Some(val) => val,
         None => {
-            // Try to find the most recent date if today doesn't exist
-            let mut dates: Vec<&String> = data.keys().collect();
-            dates.sort();
-            if let Some(recent_date) = dates.last() {
-                if let Some(recent_data) = data.get(*recent_date) {
-                    render_recent_bar(f, area, recent_data, recent_date, is_tokens);
-                }
-            }
+            // Show empty chart if there's no data for today
+            render_empty_bar(f, area, &today, is_tokens);
             return;
         },
     };
@@ -376,10 +435,17 @@ fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport,
         .iter()
         .map(|(m, _)| Span::raw(normalize_model_name(m)))
         .collect();
-    let values: Vec<u64> = items.iter().map(|(_, v)| *v as u64).collect();
+    let values: Vec<u64> = items.iter().map(|(_, v)| {
+        if is_tokens {
+            *v as u64
+        } else {
+            // For costs, multiply by 100 to show cents as integers
+            (*v * 100.0) as u64
+        }
+    }).collect();
 
     // Find max value for scaling
-    let max_val = values.iter().max().copied().unwrap_or(0) as f64;
+    let max_val = items.iter().map(|(_, v)| *v).fold(0.0, f64::max);
 
     let bar_data: Vec<(&str, u64)> = labels
         .iter()
@@ -398,7 +464,7 @@ fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport,
             }
         )
     } else {
-        format!("Today: Cost by Model (Max: ${:.0})", max_val)
+        format!("Today: Cost by Model (Max: ${:.2})", max_val)
     };
     
     let bars = BarChart::default()
@@ -413,6 +479,26 @@ fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport,
     f.render_widget(bars, area);
 }
 
+fn render_empty_bar(f: &mut ratatui::Frame, area: Rect, _date: &str, is_tokens: bool) {
+    let title = if is_tokens {
+        "Today: Tokens by Model (No data)".to_string()
+    } else {
+        "Today: Cost by Model (No data)".to_string()
+    };
+    
+    let bars = BarChart::default()
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .bar_width(10)
+        .bar_gap(3)
+        .value_style(Style::default().fg(Color::White).bg(Color::Black).add_modifier(ratatui::style::Modifier::BOLD))
+        .label_style(Style::default().fg(Color::White))
+        .bar_style(Style::default().fg(if is_tokens { Color::Green } else { Color::Magenta }))
+        .data(&[]);
+
+    f.render_widget(bars, area);
+}
+
+#[allow(dead_code)]
 fn render_recent_bar(f: &mut ratatui::Frame, area: Rect, data: &HashMap<String, ModelStats>, date: &str, is_tokens: bool) {
     let mut items: Vec<(&String, f64)> = data
         .iter()
@@ -433,10 +519,17 @@ fn render_recent_bar(f: &mut ratatui::Frame, area: Rect, data: &HashMap<String, 
         .iter()
         .map(|(m, _)| Span::raw(normalize_model_name(m)))
         .collect();
-    let values: Vec<u64> = items.iter().map(|(_, v)| *v as u64).collect();
+    let values: Vec<u64> = items.iter().map(|(_, v)| {
+        if is_tokens {
+            *v as u64
+        } else {
+            // For costs, multiply by 100 to show cents as integers
+            (*v * 100.0) as u64
+        }
+    }).collect();
 
     // Find max value for scaling
-    let max_val = values.iter().max().copied().unwrap_or(0) as f64;
+    let max_val = items.iter().map(|(_, v)| *v).fold(0.0, f64::max);
 
     let bar_data: Vec<(&str, u64)> = labels
         .iter()
@@ -456,7 +549,7 @@ fn render_recent_bar(f: &mut ratatui::Frame, area: Rect, data: &HashMap<String, 
             }
         )
     } else {
-        format!("{}: Cost by Model (Max: ${:.0})", date, max_val)
+        format!("{}: Cost by Model (Max: ${:.2})", date, max_val)
     };
     
     let bars = BarChart::default()
@@ -488,10 +581,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let refresh_interval = Duration::from_secs(10);
     let mut last_update = Instant::now() - refresh_interval;
-    let mut current_data: Option<DailyModelReport> = None;
     
     // Load data immediately on startup
-    current_data = load_data();
+    let mut current_data = load_data();
     
     while running.load(Ordering::SeqCst) {
         // Input check first
