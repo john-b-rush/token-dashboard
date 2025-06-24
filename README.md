@@ -32,7 +32,6 @@ A real-time terminal dashboard for tracking Claude and OpenAI token usage and co
 
 ### Prerequisites
 - **Rust** (latest stable)
-- **Python 3.7+**
 - **Claude Code CLI** or **Goose** with conversation logs
 
 ### Quick Start
@@ -43,17 +42,12 @@ A real-time terminal dashboard for tracking Claude and OpenAI token usage and co
    cd token-dashboard
    ```
 
-2. **Install Python dependencies**
-   ```bash
-   # No additional Python dependencies required - uses standard library only
-   ```
-
-3. **Build the dashboard**
+2. **Build the dashboard**
    ```bash
    cargo build --release
    ```
 
-4. **Run the dashboard**
+3. **Run the dashboard**
    ```bash
    cargo run
    ```
@@ -123,30 +117,23 @@ Parser data is cached for performance:
 
 ### Custom Paths
 
-You can specify custom log directories:
-
-```bash
-# Parser only
-python3 parser.py --claude-dir /path/to/claude --goose-dir /path/to/goose
-
-# The dashboard will use whatever data.json is generated
-```
+The dashboard automatically detects log directories. If you need custom paths, they can be configured in the source code.
 
 ## Architecture
 
 ### Components
 
-- **`parser.py`** - Scans conversation logs, calculates costs, generates JSON
-- **`main.rs`** - Terminal UI dashboard built with ratatui
-- **`data.json`** - Structured data cache (auto-generated)
+- **`src/main.rs`** - Terminal UI dashboard built with ratatui
+- **`src/parser.rs`** - Native Rust parser for conversation logs and cost calculation
+- **Cache system** - Intelligent file caching for fast performance
 
 ### Data Flow
 
-1. **Parser** scans `.jsonl` conversation files
+1. **Parser** scans `.jsonl` conversation files and Goose logs
 2. **Extracts** token usage and model information  
-3. **Calculates** costs using current pricing tables
-4. **Caches** results for performance
-5. **Dashboard** loads JSON and renders real-time UI
+3. **Calculates** costs using built-in pricing tables
+4. **Caches** results with intelligent modification detection
+5. **Dashboard** renders real-time UI with live data
 
 ### Cost Calculation
 
@@ -162,10 +149,10 @@ Costs are calculated using official pricing:
 ```
 token-dashboard/
 ├── src/
-│   └── main.rs           # Dashboard UI code
-├── parser.py             # Log parsing and cost calculation
+│   ├── main.rs          # Dashboard UI code
+│   └── parser.rs        # Native Rust log parser
 ├── Cargo.toml           # Rust dependencies
-├── data.json            # Generated data cache
+├── LICENSE              # MIT license
 └── README.md            # This file
 ```
 
@@ -183,18 +170,18 @@ cargo run
 
 ### Adding New Models
 
-1. **Add pricing** to `MODEL_PRICING` in `parser.py`
+1. **Add pricing** to `MODEL_PRICING` in `src/parser.rs`
 2. **Add normalization** logic in `normalize_model_name()`
 3. **Test** with sample data
 
 Example:
-```python
-"New Model": {
-    "input_tokens": 0.005,
-    "output_tokens": 0.015,
-    "input_tokens_cache_write": 0.00625,
-    "input_tokens_cache_read": 0.0005,
-},
+```rust
+m.insert("New Model", ModelPricing {
+    input_tokens: 0.005,
+    output_tokens: 0.015,
+    input_tokens_cache_write: Some(0.00625),
+    input_tokens_cache_read: Some(0.0005),
+});
 ```
 
 ## Troubleshooting
@@ -202,7 +189,7 @@ Example:
 ### No Data Showing
 - Check that you have Claude Code or Goose conversation logs
 - Verify log directories exist: `~/.claude/projects/` or `~/.local/state/goose/logs/cli/`
-- Run parser manually: `python3 parser.py --format daily`
+- Test data loading: `cargo run -- --test`
 
 ### Costs Showing as $0
 - Model might not have pricing defined
@@ -221,9 +208,9 @@ Example:
 
 ## Future Work
 
-1. **Native parser in Rust** – eliminates Python runtime, enables single-binary distribution (`cargo install token-dashboard`).
-2. **Plugin system** – allow new log sources (OpenAI audit logs, Azure billing) via Python entry-points or Rust trait objects.
-3. **Move pricing table to YAML** + unit-tested loader.
+1. **Single-binary distribution** – `cargo install token-dashboard` support
+2. **Plugin system** – allow new log sources (OpenAI audit logs, Azure billing) via Rust trait objects
+3. **Configuration file** – YAML-based pricing and settings configuration
 
 ## Contributing
 
