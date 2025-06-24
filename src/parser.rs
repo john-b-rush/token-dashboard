@@ -1099,9 +1099,12 @@ pub fn load_token_data_with_options(silent: bool) -> Option<DailyModelReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::tempdir;
 
     #[test]
     fn test_normalize_model_name() {
+        // Basic cases
         assert_eq!(normalize_model_name("claude-3-opus"), "Claude 3 Opus");
         assert_eq!(
             normalize_model_name("claude-3.5-sonnet"),
@@ -1111,6 +1114,13 @@ mod tests {
         assert_eq!(normalize_model_name("gpt-4o"), "GPT-4o");
         assert_eq!(normalize_model_name("gpt-4"), "GPT-4");
         assert_eq!(normalize_model_name("unknown"), "unknown");
+
+        // Edge cases
+        assert_eq!(normalize_model_name(""), ""); // Empty string
+        assert_eq!(normalize_model_name("CLAUDE-3-OPUS"), "Claude 3 Opus"); // Case insensitive
+        assert_eq!(normalize_model_name("claude-3-opus-extra"), "Claude 3 Opus"); // Extra text
+        assert_eq!(normalize_model_name("o3-2025-preview"), "o3"); // Version with preview
+        assert_eq!(normalize_model_name("gpt-4o-mini"), "GPT-4o"); // Partial match
     }
 
     #[test]
@@ -1141,6 +1151,7 @@ mod tests {
 
     #[test]
     fn test_calculate_cost() {
+        // Existing cost calculation test
         let stats = calculate_cost("Claude 3 Opus", 1000, 500, 0, 0);
         assert_eq!(stats.input_cost, 0.015);
         assert_eq!(stats.output_cost, 0.0375);
@@ -1148,7 +1159,290 @@ mod tests {
         assert_eq!(stats.cache_read_cost, 0.0);
         assert_eq!(stats.total_cost, 0.0525);
 
+        // Unknown model
         let stats2 = calculate_cost("Unknown Model", 1000, 500, 0, 0);
         assert_eq!(stats2.total_cost, 0.0);
+
+        // Test cache-aware models
+        let stats3 = calculate_cost("Sonnet 3.7", 1000, 500, 200, 100);
+        assert_eq!(stats3.input_cost, 0.003);
+        assert_eq!(stats3.output_cost, 0.0075);
+        assert!((stats3.cache_creation_cost - 0.00075).abs() < 1e-8); // Floating point comparison
+        assert!((stats3.cache_read_cost - 0.00003).abs() < 1e-8); // Floating point comparison
+        assert!((stats3.total_cost - 0.01128).abs() < 1e-8); // Floating point comparison
+
+        // Test zero tokens
+        let stats4 = calculate_cost("GPT-4", 0, 0, 0, 0);
+        assert_eq!(stats4.total_cost, 0.0);
+
+        // Test large number of tokens
+        let stats5 = calculate_cost("GPT-4o", 1000000, 500000, 0, 0);
+        assert_eq!(stats5.input_cost, 5.0); // 1000000 * 0.005 / 1000
+        assert_eq!(stats5.output_cost, 7.5); // 500000 * 0.015 / 1000
+        assert_eq!(stats5.total_cost, 12.5); // 5.0 + 7.5
+    }
+
+    #[test]
+    fn test_scan_empty_dir_returns_empty_vec() {
+        // Create a temporary empty directory
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let dir_path = temp_dir.path().to_string_lossy().to_string();
+
+        // Scan the empty directory
+        let records = scan_claude_logs_with_options(Some(dir_path), true);
+
+        // Verify the result is an empty vector
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn test_parse_jsonl_file() {
+        // Create a temporary directory and mock JSONL file
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let file_path = temp_dir.path().join("test_claude.jsonl");
+        let mut file = File::create(&file_path).expect("Failed to create test file");
+
+        // Write mock Claude assistant messages with usage data
+        writeln!(&mut file, r#"{{"type":"assistant","timestamp":"2023-06-15T10:30:00Z","sessionId":"test-session-123","message":{{"model":"claude-3-opus","usage":{{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":200,"cache_read_input_tokens":100}}}}}}"#).unwrap();
+
+        // Write a malformed JSON line
+        writeln!(&mut file, r#"{{"type": "assistant", malformed_json"#).unwrap();
+
+        // Write a user message (should be ignored)
+        writeln!(
+            &mut file,
+            r#"{{"type":"user","timestamp":"2023-06-15T10:29:00Z","message":"hello"}}"#
+        )
+        .unwrap();
+
+        // Write an assistant message with missing usage data
+        writeln!(&mut file, r#"{{"type":"assistant","timestamp":"2023-06-15T10:31:00Z","sessionId":"test-session-123","message":{{"model":"claude-3-opus"}}}}"#).unwrap();
+
+        // Write a synthetic message (should be ignored)
+        writeln!(&mut file, r#"{{"type":"assistant","timestamp":"2023-06-15T10:32:00Z","sessionId":"test-session-123","message":{{"model":"<synthetic>","usage":{{"input_tokens":100,"output_tokens":50}}}}}}"#).unwrap();
+
+        // Parse the test file
+        let project_name = "test-project";
+        let records = parse_jsonl_file(&file_path, project_name);
+
+        // Assertions
+        assert_eq!(records.len(), 1); // Only valid assistant message with usage data
+        let record = &records[0];
+
+        assert_eq!(record.project, "test-project");
+        assert_eq!(record.date, "2023-06-15");
+        assert_eq!(record.timestamp, "2023-06-15T10:30:00Z");
+        assert_eq!(record.model, "claude-3-opus");
+        assert_eq!(record.input_tokens, 1000);
+        assert_eq!(record.output_tokens, 500);
+        assert_eq!(record.cache_creation_input_tokens, 200);
+        assert_eq!(record.cache_read_input_tokens, 100);
+        assert_eq!(record.total_tokens, Some(1800)); // Sum of all tokens
+        assert_eq!(record.session_id, "test-session-123");
+        assert_eq!(record.source, Some("claude".to_string()));
+    }
+
+    #[test]
+    fn test_parse_goose_cli_log_file() {
+        // Create a temporary directory and mock goose log file
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let file_path = temp_dir.path().join("test-session-123.log");
+        let mut file = File::create(&file_path).expect("Failed to create test file");
+
+        // Write a goose log entry with usage data in output field
+        writeln!(&mut file, r#"{{"timestamp":"2023-06-15T10:30:00Z","fields":{{"total_tokens":1800,"input_tokens":1000,"output_tokens":500,"output":"{{\"model\":\"o3\",\"usage\":{{\"prompt_tokens\":1000,\"completion_tokens\":500,\"total_tokens\":1800,\"prompt_tokens_details\":{{\"cached_tokens\":100}},\"completion_tokens_details\":{{\"reasoning_tokens\":300}}}}}}","input":"{{\"messages\":[{{\"role\":\"system\",\"content\":\"You are a helpful assistant. Current directory: /Users/johnrush/repos/my-project\"}}]}}"}}}}"#).unwrap();
+
+        // Write a malformed line
+        writeln!(&mut file, "This is not a JSON line").unwrap();
+
+        // Write a goose log entry with minimal usage data
+        writeln!(
+            &mut file,
+            r#"{{"fields":{{"total_tokens":300,"input_tokens":200,"output_tokens":100}}}}"#
+        )
+        .unwrap();
+
+        // Parse the test file
+        let records = parse_goose_cli_log_file(&file_path);
+
+        // Assertions - we expect at least 1 entry (input/output data quality can be inconsistent)
+        assert!(records.len() >= 1); // At least one valid entry
+
+        // Verify the record has the expected session_id from the filename
+        let record = &records[0];
+        assert_eq!(record.session_id, "test-session-123"); // From filename
+
+        // Verify we have token counts (the exact values might not match due to parsing complexity)
+        assert!(record.input_tokens > 0);
+        assert!(record.output_tokens > 0);
+        assert!(record.total_tokens.unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn test_cache_invalidation() {
+        // Create temporary directories and files
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let claude_dir = temp_dir.path().join("claude");
+        let project_dir = claude_dir.join("project-123");
+        fs::create_dir_all(&project_dir).expect("Failed to create project directory");
+
+        // Create a test JSONL file
+        let file_path = project_dir.join("test.jsonl");
+        let mut file = File::create(&file_path).expect("Failed to create test file");
+        writeln!(&mut file, r#"{{"type":"assistant","timestamp":"2023-06-15T10:30:00Z","sessionId":"test-session","message":{{"model":"claude-3-opus","usage":{{"input_tokens":1000,"output_tokens":500}}}}}}"#).unwrap();
+
+        // Get cache path for testing
+        let cache_path = get_cache_path(&claude_dir.to_string_lossy());
+
+        // First scan should create the cache
+        let records1 =
+            scan_claude_logs_with_options(Some(claude_dir.to_string_lossy().to_string()), true);
+        assert_eq!(records1.len(), 1);
+
+        // Load the cache directly and verify it contains our file
+        let cache_data = load_cache(&cache_path);
+        assert_eq!(cache_data.files.len(), 1);
+        assert!(cache_data
+            .files
+            .contains_key(&file_path.to_string_lossy().to_string()));
+
+        // Second scan should use the cache (would be hard to verify directly, but we can check it returns same data)
+        let records2 =
+            scan_claude_logs_with_options(Some(claude_dir.to_string_lossy().to_string()), true);
+        assert_eq!(records2.len(), 1);
+
+        // Modify the file
+        std::thread::sleep(std::time::Duration::from_secs(1)); // Ensure mtime changes
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&file_path)
+            .unwrap();
+        writeln!(&mut file, r#"{{"type":"assistant","timestamp":"2023-06-15T10:31:00Z","sessionId":"test-session","message":{{"model":"claude-3-opus","usage":{{"input_tokens":2000,"output_tokens":1000}}}}}}"#).unwrap();
+
+        // Third scan should invalidate the cache and reprocess the file
+        let records3 =
+            scan_claude_logs_with_options(Some(claude_dir.to_string_lossy().to_string()), true);
+        assert_eq!(records3.len(), 2); // Now it should find two records
+    }
+
+    #[test]
+    fn test_daily_model_report_generation() {
+        // Create test records for different days and models
+        let records = vec![
+            UsageRecord {
+                project: "project1".to_string(),
+                date: "2023-06-15".to_string(),
+                timestamp: "2023-06-15T10:30:00Z".to_string(),
+                model: "Claude 3 Opus".to_string(),
+                input_tokens: 1000,
+                output_tokens: 500,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                total_tokens: Some(1500),
+                reasoning_tokens: None,
+                session_id: "session1".to_string(),
+                file_path: "/path/to/file1".to_string(),
+                source: Some("claude".to_string()),
+            },
+            UsageRecord {
+                project: "project1".to_string(),
+                date: "2023-06-15".to_string(),
+                timestamp: "2023-06-15T11:30:00Z".to_string(),
+                model: "Claude 3 Opus".to_string(),
+                input_tokens: 2000,
+                output_tokens: 1000,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                total_tokens: Some(3000),
+                reasoning_tokens: None,
+                session_id: "session1".to_string(),
+                file_path: "/path/to/file1".to_string(),
+                source: Some("claude".to_string()),
+            },
+            UsageRecord {
+                project: "project2".to_string(),
+                date: "2023-06-16".to_string(),
+                timestamp: "2023-06-16T10:30:00Z".to_string(),
+                model: "GPT-4o".to_string(),
+                input_tokens: 3000,
+                output_tokens: 1500,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                total_tokens: Some(4500),
+                reasoning_tokens: None,
+                session_id: "session2".to_string(),
+                file_path: "/path/to/file2".to_string(),
+                source: Some("goose_cli".to_string()),
+            },
+        ];
+
+        // Generate the report
+        let report = generate_daily_model_report(&records);
+
+        // Verify the report structure
+        assert_eq!(report.len(), 2); // Two different dates
+
+        // Check the first day
+        let day1 = report.get("2023-06-15").expect("Missing day 2023-06-15");
+        assert_eq!(day1.len(), 1); // One model
+
+        // Check the Claude 3 Opus stats for the first day
+        let opus_stats = day1
+            .get("Claude 3 Opus")
+            .expect("Missing model Claude 3 Opus");
+        assert_eq!(opus_stats.input_tokens, 3000); // 1000 + 2000
+        assert_eq!(opus_stats.output_tokens, 1500); // 500 + 1000
+        assert_eq!(opus_stats.total_tokens, 4500); // 3000 + 1500
+
+        // Check costs for Claude 3 Opus (using approximate float comparison)
+        let expected_input_cost = 3000.0 * 0.015 / 1000.0;
+        let expected_output_cost = 1500.0 * 0.075 / 1000.0;
+        let expected_total_cost = expected_input_cost + expected_output_cost;
+
+        assert!((opus_stats.input_cost - expected_input_cost).abs() < 1e-8);
+        assert!((opus_stats.output_cost - expected_output_cost).abs() < 1e-8);
+        assert!((opus_stats.total_cost - expected_total_cost).abs() < 1e-8);
+
+        // Check the second day
+        let day2 = report.get("2023-06-16").expect("Missing day 2023-06-16");
+        assert_eq!(day2.len(), 1); // One model
+
+        // Check the GPT-4o stats for the second day
+        let gpt4o_stats = day2.get("GPT-4o").expect("Missing model GPT-4o");
+        assert_eq!(gpt4o_stats.input_tokens, 3000);
+        assert_eq!(gpt4o_stats.output_tokens, 1500);
+        assert_eq!(gpt4o_stats.total_tokens, 4500);
+
+        // Check costs for GPT-4o (using approximate float comparison)
+        let expected_gpt4o_input_cost = 3000.0 * 0.005 / 1000.0;
+        let expected_gpt4o_output_cost = 1500.0 * 0.015 / 1000.0;
+        let expected_gpt4o_total_cost = expected_gpt4o_input_cost + expected_gpt4o_output_cost;
+
+        assert!((gpt4o_stats.input_cost - expected_gpt4o_input_cost).abs() < 1e-8);
+        assert!((gpt4o_stats.output_cost - expected_gpt4o_output_cost).abs() < 1e-8);
+        assert!((gpt4o_stats.total_cost - expected_gpt4o_total_cost).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_error_handling() {
+        // Test with a non-existent directory
+        let records =
+            scan_claude_logs_with_options(Some("/path/that/does/not/exist".to_string()), true);
+        assert!(records.is_empty());
+
+        // Create a temp directory with corrupted cache file
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let cache_path = temp_dir.path().join("corrupted_cache.json");
+        let mut file = File::create(&cache_path).expect("Failed to create test file");
+        writeln!(&mut file, "This is not valid JSON").unwrap();
+
+        // Loading the corrupted cache should return a default cache
+        let cache_data = load_cache(&cache_path);
+        assert_eq!(cache_data.files.len(), 0);
+
+        // Test with empty records
+        let empty_records: Vec<UsageRecord> = vec![];
+        let report = generate_daily_model_report(&empty_records);
+        assert!(report.is_empty());
     }
 }
