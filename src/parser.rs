@@ -1654,7 +1654,9 @@ mod tests {
         assert_eq!(project_report.len(), 2); // Two different dates
 
         // Check the first day
-        let day1 = project_report.get("2023-06-15").expect("Missing day 2023-06-15");
+        let day1 = project_report
+            .get("2023-06-15")
+            .expect("Missing day 2023-06-15");
         assert_eq!(day1.len(), 2); // Two projects: project1 and project2
 
         // Verify project1 stats
@@ -1670,7 +1672,9 @@ mod tests {
         assert_eq!(project2_stats.total_tokens, 4500);
 
         // Check the second day
-        let day2 = project_report.get("2023-06-16").expect("Missing day 2023-06-16");
+        let day2 = project_report
+            .get("2023-06-16")
+            .expect("Missing day 2023-06-16");
         assert_eq!(day2.len(), 1); // One project: project3
 
         // Verify project3 stats
@@ -1684,7 +1688,7 @@ mod tests {
     fn test_load_complete_token_data() {
         // Create a temporary directory for testing
         let temp_dir = tempdir().expect("Failed to create temp directory");
-        
+
         // Write a mock file to ensure we get our test record
         let test_file = temp_dir.path().join("test.jsonl");
         let mut file = File::create(&test_file).expect("Failed to create test file");
@@ -1692,17 +1696,20 @@ mod tests {
 
         // Test the TokenData structure
         let token_data = load_complete_token_data_with_options(true);
-        
+
         // Verify the structure contains both model and project reports
         assert!(token_data.is_some());
-        
+
         let data = token_data.unwrap();
         // Both reports should have data
         assert!(!data.model_report.is_empty());
         assert!(!data.project_report.is_empty());
-        
+
         // Both reports should have the same dates
-        assert_eq!(data.model_report.keys().len(), data.project_report.keys().len());
+        assert_eq!(
+            data.model_report.keys().len(),
+            data.project_report.keys().len()
+        );
     }
 
     #[test]

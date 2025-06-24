@@ -25,7 +25,7 @@ use std::io::stdout;
 use std::time::Instant;
 
 // Use the parser module types
-use parser::{ModelStats, TokenData, DailyModelReport};
+use parser::{DailyModelReport, ModelStats, TokenData};
 
 // View mode for choosing how to group data
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -196,20 +196,30 @@ fn draw_ui<B: ratatui::backend::Backend>(
     };
     terminal.draw(|f| {
         let full = f.size();
-        let layout = Layout::default()
+
+        // Create main vertical layout
+        let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
             .constraints([Constraint::Length(7), Constraint::Min(0)])
             .split(full);
 
+        // Split top area into stats and controls
+        let top_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
+            .split(main_layout[0]);
+
         let view_mode_text = match view_mode {
             ViewMode::ByModel => "Mode: By Model (M)",
             ViewMode::ByProject => "Mode: By Project (P)",
         };
-        
+
         let summary_block = Block::default()
             .title(format!(" Token Usage Dashboard - {} ", view_mode_text))
             .borders(Borders::ALL);
+
+        // Remove the help text since we're using a separate control panel
 
         let summary_text = Paragraph::new(format!(
             "Lifetime Spend   ${:.2}\nLifetime Tokens  {}/{} ({}/{})\nMonth-to-Date    ${:.2}\nToday's Spend    ${:.2}\nToday's Tokens   {}/{} ({}/{})",
@@ -228,12 +238,33 @@ fn draw_ui<B: ratatui::backend::Backend>(
         .block(summary_block)
         .style(Style::default().fg(Color::Green));
 
-        f.render_widget(summary_text, layout[0]);
+        // Controls block with keyboard shortcuts
+        let controls_block = Block::default()
+            .title(" Controls ")
+            .borders(Borders::ALL);
+
+        // Create help text based on current view
+        let toggle_text = match view_mode {
+            ViewMode::ByModel => "[P] Switch to Project View",
+            ViewMode::ByProject => "[M] Switch to Model View",
+        };
+
+        let controls_text = Paragraph::new(format!(
+            "{}\n[Q] Quit",
+            toggle_text
+        ))
+        .block(controls_block)
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(ratatui::layout::Alignment::Center);
+
+        // Render both panels
+        f.render_widget(summary_text, top_layout[0]);
+        f.render_widget(controls_text, top_layout[1]);
 
         let chart_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(layout[1]);
+            .split(main_layout[1]);
 
         let top_row = Layout::default()
             .direction(Direction::Horizontal)
@@ -402,13 +433,21 @@ fn render_stacked_bar(
     // Render the chart
     let chart_title = match view_mode {
         ViewMode::ByModel => {
-            if is_tokens { "Tokens/day by Model" } else { "Cost/day ($) by Model" }
-        },
+            if is_tokens {
+                "Tokens/day by Model"
+            } else {
+                "Cost/day ($) by Model"
+            }
+        }
         ViewMode::ByProject => {
-            if is_tokens { "Tokens/day by Project" } else { "Cost/day ($) by Project" }
-        },
+            if is_tokens {
+                "Tokens/day by Project"
+            } else {
+                "Cost/day ($) by Project"
+            }
+        }
     };
-    
+
     let chart = Chart::new(datasets)
         .block(Block::default().borders(Borders::ALL).title(chart_title))
         .x_axis(
@@ -473,7 +512,13 @@ fn render_stacked_bar(
     f.render_widget(legend_paragraph, legend_area);
 }
 
-fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport, is_tokens: bool, view_mode: ViewMode) {
+fn render_today_bar(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    data: &DailyModelReport,
+    is_tokens: bool,
+    view_mode: ViewMode,
+) {
     let today = Utc::now().naive_utc().date().format("%Y-%m-%d").to_string();
     let today_data = match data.get(&today) {
         Some(val) => val,
@@ -566,7 +611,13 @@ fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport,
     f.render_widget(bars, area);
 }
 
-fn render_empty_bar(f: &mut ratatui::Frame, area: Rect, _date: &str, is_tokens: bool, view_mode: ViewMode) {
+fn render_empty_bar(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    _date: &str,
+    is_tokens: bool,
+    view_mode: ViewMode,
+) {
     let category = match view_mode {
         ViewMode::ByModel => "Model",
         ViewMode::ByProject => "Project",
@@ -748,8 +799,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Use the pre-loaded data and compute initial aggregates
     let mut current_data = initial_data;
-    let mut current_aggregates = current_data.as_ref().map(|data| compute_aggregates(&data.model_report));
-    
+    let mut current_aggregates = current_data
+        .as_ref()
+        .map(|data| compute_aggregates(&data.model_report));
+
     // Track current view mode
     let mut current_view_mode = ViewMode::ByModel;
 
@@ -765,16 +818,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 current_view_mode = ViewMode::ByModel;
                                 // Update aggregates based on the new view mode
                                 if let Some(data) = &current_data {
-                                    current_aggregates = Some(compute_aggregates(&data.model_report));
+                                    current_aggregates =
+                                        Some(compute_aggregates(&data.model_report));
                                 }
-                            },
+                            }
                             KeyCode::Char('p') | KeyCode::Char('P') => {
                                 current_view_mode = ViewMode::ByProject;
                                 // Update aggregates based on the new view mode
                                 if let Some(data) = &current_data {
-                                    current_aggregates = Some(compute_aggregates(&data.project_report));
+                                    current_aggregates =
+                                        Some(compute_aggregates(&data.project_report));
                                 }
-                            },
+                            }
                             _ => {}
                         }
                     }
@@ -810,7 +865,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Always try to render
         match (&current_data, &current_aggregates) {
             (Some(data), Some(aggregates)) => {
-                if let Err(e) = draw_ui(terminal_guard.terminal_mut(), data, aggregates, current_view_mode) {
+                if let Err(e) = draw_ui(
+                    terminal_guard.terminal_mut(),
+                    data,
+                    aggregates,
+                    current_view_mode,
+                ) {
                     eprintln!("Error drawing UI: {}", e);
                     break;
                 }
@@ -818,15 +878,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {
                 // Show loading/error screen
                 if let Err(e) = terminal_guard.terminal_mut().draw(|f| {
+                    let main_area = f.size();
+
+                    // Create vertical split
+                    let main_layout = Layout::default()
+                        .direction(Direction::Vertical)
+                        .margin(1)
+                        .constraints([Constraint::Length(7), Constraint::Min(0)])
+                        .split(main_area);
+
+                    // Split top area into message and controls
+                    let top_layout = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
+                        .split(main_layout[0]);
+
+                    // Main message
                     let block = Block::default()
                         .title(" Token Usage Dashboard - No Data ")
                         .borders(Borders::ALL);
-                    let paragraph = Paragraph::new(
-                        "Unable to load data from parser.\nPress 'q' or Esc to quit",
-                    )
-                    .block(block)
-                    .style(Style::default().fg(Color::Red));
-                    f.render_widget(paragraph, f.size());
+                    let paragraph = Paragraph::new("Unable to load data from parser.")
+                        .block(block)
+                        .style(Style::default().fg(Color::Red));
+                    f.render_widget(paragraph, top_layout[0]);
+
+                    // Controls section
+                    let controls_block = Block::default().title(" Controls ").borders(Borders::ALL);
+                    let controls_text =
+                        Paragraph::new("[M] View by Model\n[P] View by Project\n[Q] Quit")
+                            .block(controls_block)
+                            .style(Style::default().fg(Color::Yellow))
+                            .alignment(ratatui::layout::Alignment::Center);
+                    f.render_widget(controls_text, top_layout[1]);
                 }) {
                     eprintln!("Error drawing no-data screen: {}", e);
                     break;
