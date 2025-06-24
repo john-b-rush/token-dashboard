@@ -29,6 +29,36 @@ use parser::ModelStats;
 // Define the report type
 type DailyModelReport = HashMap<String, HashMap<String, ModelStats>>; // date -> model -> stats
 
+// Totals structure for aggregated data
+#[derive(Debug, Clone)]
+struct Totals {
+    cost: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+}
+
+impl Default for Totals {
+    fn default() -> Self {
+        Totals {
+            cost: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        }
+    }
+}
+
+// Aggregates structure for pre-computed UI data
+#[derive(Debug, Clone)]
+struct Aggregates {
+    lifetime: Totals,
+    mtd: Totals,
+    today: Totals,
+}
+
 fn format_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000_000 {
         format!("{:.1}B", tokens as f64 / 1_000_000_000.0)
@@ -43,6 +73,52 @@ fn format_tokens(tokens: u64) -> String {
 
 // Use the normalize_model_name function from our parser module
 use parser::normalize_model_name;
+
+/// Compute aggregates once when data is loaded/refreshed
+fn compute_aggregates(data: &DailyModelReport) -> Aggregates {
+    let mut lifetime = Totals::default();
+    let mut mtd = Totals::default();
+    let mut today = Totals::default();
+
+    let today_date = Utc::now().naive_utc().date();
+    let today_str = today_date.format("%Y-%m-%d").to_string();
+    let this_month = today_date.format("%Y-%m").to_string();
+
+    for (date, model_map) in data.iter() {
+        for (_model, stat) in model_map.iter() {
+            // Lifetime totals
+            lifetime.cost += stat.total_cost;
+            lifetime.input_tokens += stat.input_tokens;
+            lifetime.output_tokens += stat.output_tokens;
+            lifetime.cache_read_tokens += stat.cache_read_tokens;
+            lifetime.cache_write_tokens += stat.cache_creation_tokens;
+
+            // Month-to-date
+            if date.starts_with(&this_month) {
+                mtd.cost += stat.total_cost;
+                mtd.input_tokens += stat.input_tokens;
+                mtd.output_tokens += stat.output_tokens;
+                mtd.cache_read_tokens += stat.cache_read_tokens;
+                mtd.cache_write_tokens += stat.cache_creation_tokens;
+            }
+
+            // Today
+            if date == &today_str {
+                today.cost += stat.total_cost;
+                today.input_tokens += stat.input_tokens;
+                today.output_tokens += stat.output_tokens;
+                today.cache_read_tokens += stat.cache_read_tokens;
+                today.cache_write_tokens += stat.cache_creation_tokens;
+            }
+        }
+    }
+
+    Aggregates {
+        lifetime,
+        mtd,
+        today,
+    }
+}
 
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -104,6 +180,7 @@ fn load_data() -> Option<DailyModelReport> {
 fn draw_ui<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     data: &DailyModelReport,
+    aggregates: &Aggregates,
 ) -> std::io::Result<()> {
     terminal.draw(|f| {
         let full = f.size();
@@ -117,71 +194,19 @@ fn draw_ui<B: ratatui::backend::Backend>(
             .title(" Token Usage Dashboard ")
             .borders(Borders::ALL);
 
-        let mut lifetime_cost = 0.0;
-        let mut mtd_cost = 0.0;
-        let mut today_cost = 0.0;
-
-        let mut lifetime_input = 0u64;
-        let mut lifetime_output = 0u64;
-        let mut lifetime_cache_read = 0u64;
-        let mut lifetime_cache_write = 0u64;
-
-        let mut _mtd_input = 0u64;
-        let mut _mtd_output = 0u64;
-        let mut _mtd_cache_read = 0u64;
-        let mut _mtd_cache_write = 0u64;
-
-        let mut today_input = 0u64;
-        let mut today_output = 0u64;
-        let mut today_cache_read = 0u64;
-        let mut today_cache_write = 0u64;
-
-        let today = Utc::now().naive_utc().date();
-        let today_str = today.format("%Y-%m-%d").to_string();
-        let this_month = today.format("%Y-%m").to_string();
-
-        for (date, model_map) in data.iter() {
-            for (_model, stat) in model_map.iter() {
-                // Lifetime totals
-                lifetime_cost += stat.total_cost;
-                lifetime_input += stat.input_tokens;
-                lifetime_output += stat.output_tokens;
-                lifetime_cache_read += stat.cache_read_tokens;
-                lifetime_cache_write += stat.cache_creation_tokens;
-
-                // Month-to-date
-                if date.starts_with(&this_month) {
-                    mtd_cost += stat.total_cost;
-                    _mtd_input += stat.input_tokens;
-                    _mtd_output += stat.output_tokens;
-                    _mtd_cache_read += stat.cache_read_tokens;
-                    _mtd_cache_write += stat.cache_creation_tokens;
-                }
-
-                // Today
-                if date == &today_str {
-                    today_cost += stat.total_cost;
-                    today_input += stat.input_tokens;
-                    today_output += stat.output_tokens;
-                    today_cache_read += stat.cache_read_tokens;
-                    today_cache_write += stat.cache_creation_tokens;
-                }
-            }
-        }
-
         let summary_text = Paragraph::new(format!(
             "Lifetime Spend   ${:.2}\nLifetime Tokens  {}/{} ({}/{})\nMonth-to-Date    ${:.2}\nToday's Spend    ${:.2}\nToday's Tokens   {}/{} ({}/{})",
-            lifetime_cost,
-            format_tokens(lifetime_input),
-            format_tokens(lifetime_output),
-            format_tokens(lifetime_cache_read),
-            format_tokens(lifetime_cache_write),
-            mtd_cost,
-            today_cost,
-            format_tokens(today_input),
-            format_tokens(today_output),
-            format_tokens(today_cache_read),
-            format_tokens(today_cache_write)
+            aggregates.lifetime.cost,
+            format_tokens(aggregates.lifetime.input_tokens),
+            format_tokens(aggregates.lifetime.output_tokens),
+            format_tokens(aggregates.lifetime.cache_read_tokens),
+            format_tokens(aggregates.lifetime.cache_write_tokens),
+            aggregates.mtd.cost,
+            aggregates.today.cost,
+            format_tokens(aggregates.today.input_tokens),
+            format_tokens(aggregates.today.output_tokens),
+            format_tokens(aggregates.today.cache_read_tokens),
+            format_tokens(aggregates.today.cache_write_tokens)
         ))
         .block(summary_block)
         .style(Style::default().fg(Color::Green));
@@ -674,8 +699,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let refresh_interval = Duration::from_secs(10);
     let mut last_update = Instant::now(); // Set to now so we don't immediately refresh
 
-    // Use the pre-loaded data
+    // Use the pre-loaded data and compute initial aggregates
     let mut current_data = initial_data;
+    let mut current_aggregates = current_data.as_ref().map(compute_aggregates);
 
     while running.load(Ordering::SeqCst) {
         // Input check first
@@ -705,20 +731,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if last_update.elapsed() >= refresh_interval {
             // Load data silently on refresh
             if let Some(data) = parser::load_token_data_with_options(true) {
+                current_aggregates = Some(compute_aggregates(&data));
                 current_data = Some(data);
             }
             last_update = Instant::now();
         }
 
         // Always try to render
-        match &current_data {
-            Some(data) => {
-                if let Err(e) = draw_ui(terminal_guard.terminal_mut(), data) {
+        match (&current_data, &current_aggregates) {
+            (Some(data), Some(aggregates)) => {
+                if let Err(e) = draw_ui(terminal_guard.terminal_mut(), data, aggregates) {
                     eprintln!("Error drawing UI: {}", e);
                     break;
                 }
             }
-            None => {
+            _ => {
                 // Show loading/error screen
                 if let Err(e) = terminal_guard.terminal_mut().draw(|f| {
                     let block = Block::default()
