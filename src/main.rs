@@ -1,4 +1,6 @@
-// Skeleton main.rs for ratatui dashboard
+// Token Dashboard
+mod parser;
+
 use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -9,7 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::{process::Command, thread, time::Duration};
+use std::{thread, time::Duration};
 
 use chrono::Utc;
 use crossterm::event::{poll, read, Event, KeyCode};
@@ -19,25 +21,12 @@ use ratatui::symbols;
 use ratatui::text::Span;
 use ratatui::widgets::*;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use serde::Deserialize;
 use std::io::stdout;
 use std::time::Instant;
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct ModelStats {
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_creation_tokens: u64,
-    cache_read_tokens: u64,
-    total_tokens: u64,
-    input_cost: f64,
-    output_cost: f64,
-    cache_creation_cost: f64,
-    cache_read_cost: f64,
-    total_cost: f64,
-}
-
+// Use the ModelStats from our parser module
+use parser::ModelStats;
+// Define the report type
 type DailyModelReport = HashMap<String, HashMap<String, ModelStats>>; // date -> model -> stats
 
 fn format_tokens(tokens: u64) -> String {
@@ -52,40 +41,8 @@ fn format_tokens(tokens: u64) -> String {
     }
 }
 
-fn normalize_model_name(model: &str) -> String {
-    let model_lower = model.to_lowercase();
-
-    // Map Claude model names to cleaner versions
-    if model_lower.contains("opus-4") {
-        "Opus 4".to_string()
-    } else if model_lower.contains("sonnet-4") {
-        "Sonnet 4".to_string()
-    } else if (model_lower.contains("claude-3.7") && model_lower.contains("sonnet"))
-        || model_lower.contains("3-7-sonnet")
-    {
-        "Sonnet 3.7".to_string()
-    } else if model_lower.contains("claude-3-5-sonnet") || model_lower.contains("claude-3.5-sonnet")
-    {
-        "Claude 3.5 Sonnet".to_string()
-    } else if model_lower.contains("claude-3-5-haiku") || model_lower.contains("claude-3.5-haiku") {
-        "Claude 3.5 Haiku".to_string()
-    } else if model_lower.contains("claude-3-opus") {
-        "Claude 3 Opus".to_string()
-    // Map OpenAI/goose model names
-    } else if model_lower == "o3" || model_lower.contains("o3-2025") {
-        "o3".to_string()
-    } else if model_lower.contains("o1") {
-        "o1".to_string()
-    } else if model_lower.contains("gpt-4o") {
-        "GPT-4o".to_string()
-    } else if model_lower.contains("gpt-4") && !model_lower.contains("gpt-4o") {
-        "GPT-4".to_string()
-    } else if model_lower == "unknown" {
-        "Unknown".to_string()
-    } else {
-        model.to_string() // Return original if no match
-    }
-}
+// Use the normalize_model_name function from our parser module
+use parser::normalize_model_name;
 
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -134,36 +91,14 @@ impl Drop for TerminalGuard {
 }
 
 fn load_data() -> Option<DailyModelReport> {
-    use std::fs;
-
-    // Run the parser to generate the JSON file
-    let output = Command::new("python3")
-        .arg("parser.py")
-        .arg("--format")
-        .arg("json")
-        .arg("--output")
-        .arg("data.json")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        eprintln!(
-            "Python parser failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
+    // Use our Rust parser to get the data directly
+    eprintln!("Loading token data...");
+    let result = parser::load_token_data();
+    match &result {
+        Some(data) => eprintln!("Loaded data for {} dates", data.len()),
+        None => eprintln!("No data found"),
     }
-
-    // Read the generated JSON file
-    let text = fs::read_to_string("data.json").ok()?;
-
-    match serde_json::from_str::<DailyModelReport>(&text) {
-        Ok(data) => Some(data),
-        Err(e) => {
-            eprintln!("JSON parsing failed: {}", e);
-            None
-        }
-    }
+    result
 }
 
 fn draw_ui<B: ratatui::backend::Backend>(
@@ -696,48 +631,110 @@ fn setup_signal_handler() -> Result<Arc<AtomicBool>, Box<dyn std::error::Error>>
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("Starting token dashboard...");
+
+    // Check for test mode
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "--test" {
+        eprintln!("Running in test mode - data loading only");
+        let initial_data = load_data();
+        match initial_data {
+            Some(data) => {
+                eprintln!("SUCCESS: Loaded data for {} dates", data.len());
+                for (date, models) in data.iter().take(3) {
+                    eprintln!("  Date: {}, Models: {}", date, models.len());
+                }
+                return Ok(());
+            }
+            None => {
+                eprintln!("ERROR: No token data found");
+                return Ok(());
+            }
+        }
+    }
+
+    // Check for terminal test mode
+    if args.len() > 1 && args[1] == "--test-terminal" {
+        eprintln!("Testing terminal initialization...");
+        let _terminal_guard = TerminalGuard::new()?;
+        eprintln!("Terminal initialized successfully, exiting");
+        return Ok(());
+    }
+
+    // Load data completely before initializing terminal
+    let initial_data = load_data();
+    if initial_data.is_none() {
+        eprintln!("Warning: No token data found");
+        eprintln!("Press Ctrl+C to exit or continue to start dashboard...");
+    }
+
     let running = setup_signal_handler()?;
     let mut terminal_guard = TerminalGuard::new()?;
 
     let refresh_interval = Duration::from_secs(10);
-    let mut last_update = Instant::now() - refresh_interval;
+    let mut last_update = Instant::now(); // Set to now so we don't immediately refresh
 
-    // Load data immediately on startup
-    let mut current_data = load_data();
+    // Use the pre-loaded data
+    let mut current_data = initial_data;
 
     while running.load(Ordering::SeqCst) {
         // Input check first
-        if poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = read()? {
-                if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
-                    break;
+        match poll(Duration::from_millis(100)) {
+            Ok(true) => {
+                match read() {
+                    Ok(Event::Key(key)) => {
+                        if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
+                            break;
+                        }
+                    }
+                    Ok(_) => {} // Other events
+                    Err(e) => {
+                        eprintln!("Error reading input: {}", e);
+                        break;
+                    }
                 }
+            }
+            Ok(false) => {} // No input available
+            Err(e) => {
+                eprintln!("Error polling input: {}", e);
+                break;
             }
         }
 
         // Refresh data on interval
         if last_update.elapsed() >= refresh_interval {
-            if let Some(data) = load_data() {
+            // Load data silently on refresh
+            if let Some(data) = parser::load_token_data_with_options(true) {
                 current_data = Some(data);
             }
             last_update = Instant::now();
         }
 
         // Always try to render
-        if let Some(ref data) = current_data {
-            draw_ui(terminal_guard.terminal_mut(), data)?;
-        } else {
-            // Show loading/error screen
-            terminal_guard.terminal_mut().draw(|f| {
-                let block = Block::default()
-                    .title(" Token Usage Dashboard - No Data ")
-                    .borders(Borders::ALL);
-                let paragraph =
-                    Paragraph::new("Unable to load data from parser.\nPress 'q' or Esc to quit")
-                        .block(block)
-                        .style(Style::default().fg(Color::Red));
-                f.render_widget(paragraph, f.size());
-            })?;
+        match &current_data {
+            Some(data) => {
+                if let Err(e) = draw_ui(terminal_guard.terminal_mut(), data) {
+                    eprintln!("Error drawing UI: {}", e);
+                    break;
+                }
+            }
+            None => {
+                // Show loading/error screen
+                if let Err(e) = terminal_guard.terminal_mut().draw(|f| {
+                    let block = Block::default()
+                        .title(" Token Usage Dashboard - No Data ")
+                        .borders(Borders::ALL);
+                    let paragraph = Paragraph::new(
+                        "Unable to load data from parser.\nPress 'q' or Esc to quit",
+                    )
+                    .block(block)
+                    .style(Style::default().fg(Color::Red));
+                    f.render_widget(paragraph, f.size());
+                }) {
+                    eprintln!("Error drawing no-data screen: {}", e);
+                    break;
+                }
+            }
         }
 
         // Avoid burning CPU
