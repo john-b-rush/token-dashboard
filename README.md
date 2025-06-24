@@ -1,8 +1,8 @@
 # Token Usage Dashboard
 
-A real-time terminal dashboard for tracking Claude and OpenAI token usage and costs across all your projects.
+A real-time terminal dashboard for tracking Claude and OpenAI token usage and costs across all your projects when you use Claude Code or Goose CLI. This dashboard provides a comprehensive overview of your token consumption, costs, and trends, helping you manage your AI expenses effectively.
 
-![Dashboard Screenshot](https://via.placeholder.com/800x400/000000/00ff00?text=Token+Usage+Dashboard)
+![Dashboard Screenshot](screenshot.png)
 
 ## Features
 
@@ -45,7 +45,7 @@ A real-time terminal dashboard for tracking Claude and OpenAI token usage and co
 
 2. **Install Python dependencies**
    ```bash
-   pip install serde chrono
+   # No additional Python dependencies required - uses standard library only
    ```
 
 3. **Build the dashboard**
@@ -95,6 +95,15 @@ The dashboard shows four main sections:
 4. **Daily Breakdowns** (bottom charts)
    - Today's usage by model (tokens and cost)
    - Bar charts showing current day totals
+
+## Where does the data come from?
+
+The dashboard automatically scans conversation logs from:
+
+- **Claude Code logs**: `~/.claude/projects/` - Contains `.jsonl` files with conversation history
+- **Goose CLI logs**: `~/.local/state/goose/logs/cli/` - Contains session logs with token usage
+
+These directories contain the raw conversation data that gets parsed to extract token usage and calculate costs. If you don't see any data, make sure you have used Claude Code or Goose CLI and have conversation logs in these locations.
 
 ## Configuration
 
@@ -209,6 +218,12 @@ Example:
 - Clear cache if it becomes corrupted: `rm -rf ~/.cache/claude-token-burn/`
 - Large log directories may take time on first scan
 - Subsequent runs should be fast due to caching
+
+## Future Work
+
+1. **Native parser in Rust** – eliminates Python runtime, enables single-binary distribution (`cargo install token-dashboard`).
+2. **Plugin system** – allow new log sources (OpenAI audit logs, Azure billing) via Python entry-points or Rust trait objects.
+3. **Move pricing table to YAML** + unit-tested loader.
 
 ## Contributing
 
