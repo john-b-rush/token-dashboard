@@ -1,4 +1,5 @@
 use chrono::{TimeZone, Utc};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value};
 use std::collections::HashMap;
@@ -295,13 +296,13 @@ pub fn calculate_cost(
 // ----- File Parsing Functions -----
 
 /// Parse a JSONL file and extract token usage records
-pub fn parse_jsonl_file(file_path: &str, project_name: &str) -> Vec<UsageRecord> {
+pub fn parse_jsonl_file(file_path: &Path, project_name: &str) -> Vec<UsageRecord> {
     let mut records = Vec::new();
 
     let file = match File::open(file_path) {
         Ok(file) => file,
         Err(e) => {
-            eprintln!("Error reading file {}: {}", file_path, e);
+            eprintln!("Error reading file {}: {}", file_path.display(), e);
             return records;
         }
     };
@@ -314,7 +315,7 @@ pub fn parse_jsonl_file(file_path: &str, project_name: &str) -> Vec<UsageRecord>
             Err(e) => {
                 eprintln!(
                     "Error reading line at {}:{}: {}",
-                    file_path,
+                    file_path.display(),
                     line_num + 1,
                     e
                 );
@@ -389,7 +390,7 @@ pub fn parse_jsonl_file(file_path: &str, project_name: &str) -> Vec<UsageRecord>
                                         total_tokens: None,
                                         reasoning_tokens: None,
                                         session_id,
-                                        file_path: file_path.to_string(),
+                                        file_path: file_path.to_string_lossy().to_string(),
                                         source: Some("claude".to_string()),
                                     };
 
@@ -418,7 +419,7 @@ pub fn parse_jsonl_file(file_path: &str, project_name: &str) -> Vec<UsageRecord>
             Err(e) => {
                 eprintln!(
                     "Warning: Failed to parse JSON at {}:{} - {}",
-                    file_path,
+                    file_path.display(),
                     line_num + 1,
                     e
                 );
@@ -431,9 +432,9 @@ pub fn parse_jsonl_file(file_path: &str, project_name: &str) -> Vec<UsageRecord>
 }
 
 /// Parse a goose CLI log file and extract token usage records
-pub fn parse_goose_cli_log_file(file_path: &str) -> Vec<UsageRecord> {
+pub fn parse_goose_cli_log_file(file_path: &Path) -> Vec<UsageRecord> {
     let mut records = Vec::new();
-    let session_id = Path::new(file_path)
+    let session_id = file_path
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or("")
@@ -442,7 +443,11 @@ pub fn parse_goose_cli_log_file(file_path: &str) -> Vec<UsageRecord> {
     let file = match File::open(file_path) {
         Ok(file) => file,
         Err(e) => {
-            eprintln!("Error reading goose CLI log file {}: {}", file_path, e);
+            eprintln!(
+                "Error reading goose CLI log file {}: {}",
+                file_path.display(),
+                e
+            );
             return records;
         }
     };
@@ -455,7 +460,7 @@ pub fn parse_goose_cli_log_file(file_path: &str) -> Vec<UsageRecord> {
             Err(e) => {
                 eprintln!(
                     "Error reading line at {}:{}: {}",
-                    file_path,
+                    file_path.display(),
                     line_num + 1,
                     e
                 );
@@ -642,7 +647,7 @@ pub fn parse_goose_cli_log_file(file_path: &str) -> Vec<UsageRecord> {
                             total_tokens: Some(total_tokens),
                             reasoning_tokens: Some(reasoning_tokens),
                             session_id: session_id.clone(),
-                            file_path: file_path.to_string(),
+                            file_path: file_path.to_string_lossy().to_string(),
                             source: Some("goose_cli".to_string()),
                         };
 
@@ -703,7 +708,7 @@ pub fn save_cache(cache_path: &Path, cache_data: &CacheData) {
 }
 
 /// Check if file has been modified since the cached modification time
-pub fn is_file_modified(file_path: &str, cached_mtime: f64) -> bool {
+pub fn is_file_modified(file_path: &Path, cached_mtime: f64) -> bool {
     match fs::metadata(file_path) {
         Ok(metadata) => {
             match metadata.modified() {
@@ -732,33 +737,55 @@ pub fn scan_claude_logs(claude_dir: Option<String>) -> Vec<UsageRecord> {
     scan_claude_logs_with_options(claude_dir, false)
 }
 
+/// Structure to hold file information for processing
+#[derive(Debug, Clone)]
+struct FileToProcess {
+    path: PathBuf,
+    project_name: String,
+    current_mtime: f64,
+}
+
+/// Get the default Claude projects directory
+fn get_claude_projects_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|path| path.join(".claude").join("projects"))
+        .unwrap_or_else(|| PathBuf::from("~/.claude/projects"))
+}
+
+/// Get the default Goose CLI logs directory
+fn get_goose_logs_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|path| path.join(".local/state/goose/logs/cli"))
+        .unwrap_or_else(|| PathBuf::from("~/.local/state/goose/logs/cli"))
+}
+
 /// Scan all Claude log files and extract token usage data with caching (with silent option)
 pub fn scan_claude_logs_with_options(claude_dir: Option<String>, silent: bool) -> Vec<UsageRecord> {
-    let claude_dir = claude_dir.unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|path| {
-                path.join(".claude")
-                    .join("projects")
-                    .to_string_lossy()
-                    .to_string()
-            })
-            .unwrap_or_else(|| "~/.claude/projects".to_string())
-    });
+    let claude_path = if let Some(dir) = claude_dir {
+        PathBuf::from(dir)
+    } else {
+        get_claude_projects_dir()
+    };
 
-    let claude_path = Path::new(&claude_dir);
     if !claude_path.exists() {
-        eprintln!("Claude projects directory not found: {}", claude_dir);
+        eprintln!(
+            "Claude projects directory not found: {}",
+            claude_path.display()
+        );
         return Vec::new();
     }
 
     // Load cache
-    let cache_path = get_cache_path(&claude_dir);
+    let cache_path = get_cache_path(&claude_path.to_string_lossy());
     let mut cache_data = load_cache(&cache_path);
     let mut all_records = Vec::new();
     let mut files_processed = 0;
     let mut files_from_cache = 0;
 
-    // Iterate through project folders
+    // Collect all files that need processing
+    let mut files_to_process = Vec::new();
+
+    // First pass: collect files and use cache when possible
     if let Ok(entries) = fs::read_dir(claude_path) {
         for entry in entries.filter_map(Result::ok) {
             if !entry.path().is_dir() {
@@ -774,7 +801,7 @@ pub fn scan_claude_logs_with_options(claude_dir: Option<String>, silent: bool) -
                 for file_entry in files.filter_map(Result::ok) {
                     if let Some(extension) = file_entry.path().extension() {
                         if extension == "jsonl" {
-                            let file_path = file_entry.path().to_string_lossy().to_string();
+                            let file_path = file_entry.path();
 
                             let current_mtime = match fs::metadata(&file_path) {
                                 Ok(metadata) => match metadata.modified() {
@@ -787,8 +814,10 @@ pub fn scan_claude_logs_with_options(claude_dir: Option<String>, silent: bool) -
                                 Err(_) => continue,
                             };
 
+                            let file_path_str = file_path.to_string_lossy().to_string();
+
                             // Check if file is in cache and hasn't been modified
-                            if let Some(cache_entry) = cache_data.files.get(&file_path) {
+                            if let Some(cache_entry) = cache_data.files.get(&file_path_str) {
                                 if !is_file_modified(&file_path, cache_entry.mtime) {
                                     // Use cached records
                                     all_records.extend(cache_entry.records.clone());
@@ -797,24 +826,39 @@ pub fn scan_claude_logs_with_options(claude_dir: Option<String>, silent: bool) -
                                 }
                             }
 
-                            // Parse file and update cache
-                            let records = parse_jsonl_file(&file_path, &project_name);
-                            all_records.extend(records.clone());
-
-                            // Update cache entry
-                            cache_data.files.insert(
-                                file_path.clone(),
-                                CacheEntry {
-                                    mtime: current_mtime,
-                                    records,
-                                },
-                            );
-                            files_processed += 1;
+                            // Add to files that need processing
+                            files_to_process.push(FileToProcess {
+                                path: file_path.to_path_buf(),
+                                project_name: project_name.clone(),
+                                current_mtime,
+                            });
                         }
                     }
                 }
             }
         }
+    }
+
+    // Second pass: process files in parallel
+    let processed_results: Vec<_> = files_to_process
+        .par_iter()
+        .map(|file_info| {
+            let records = parse_jsonl_file(&file_info.path, &file_info.project_name);
+            (
+                file_info.path.to_string_lossy().to_string(),
+                file_info.current_mtime,
+                records,
+            )
+        })
+        .collect();
+
+    // Third pass: collect results and update cache
+    for (file_path, mtime, records) in processed_results {
+        all_records.extend(records.clone());
+        cache_data
+            .files
+            .insert(file_path, CacheEntry { mtime, records });
+        files_processed += 1;
     }
 
     // Save updated cache
@@ -838,30 +882,31 @@ pub fn scan_goose_logs(goose_dir: Option<String>) -> Vec<UsageRecord> {
 
 /// Scan all goose CLI log files and extract token usage data with caching (with silent option)
 pub fn scan_goose_logs_with_options(goose_dir: Option<String>, silent: bool) -> Vec<UsageRecord> {
-    let goose_dir = goose_dir.unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|path| {
-                path.join(".local/state/goose/logs/cli")
-                    .to_string_lossy()
-                    .to_string()
-            })
-            .unwrap_or_else(|| "~/.local/state/goose/logs/cli".to_string())
-    });
+    let goose_path = if let Some(dir) = goose_dir {
+        PathBuf::from(dir)
+    } else {
+        get_goose_logs_dir()
+    };
 
-    let goose_path = Path::new(&goose_dir);
     if !goose_path.exists() {
-        eprintln!("Goose CLI logs directory not found: {}", goose_dir);
+        eprintln!(
+            "Goose CLI logs directory not found: {}",
+            goose_path.display()
+        );
         return Vec::new();
     }
 
     // Load cache
-    let cache_path = get_cache_path(&goose_dir);
+    let cache_path = get_cache_path(&goose_path.to_string_lossy());
     let mut cache_data = load_cache(&cache_path);
     let mut all_records = Vec::new();
     let mut files_processed = 0;
     let mut files_from_cache = 0;
 
-    // Process all .log files in date-organized subdirectories
+    // Collect all files that need processing
+    let mut files_to_process = Vec::new();
+
+    // First pass: collect files and use cache when possible
     if let Ok(entries) = fs::read_dir(goose_path) {
         for entry in entries.filter_map(Result::ok) {
             if !entry.path().is_dir() {
@@ -878,7 +923,7 @@ pub fn scan_goose_logs_with_options(goose_dir: Option<String>, silent: bool) -> 
                             if !file_name.ends_with("-mcp-developer.log")
                                 && !file_name.ends_with("-mcp-memory.log")
                             {
-                                let file_path = file_entry.path().to_string_lossy().to_string();
+                                let file_path = file_entry.path();
 
                                 let current_mtime = match fs::metadata(&file_path) {
                                     Ok(metadata) => match metadata.modified() {
@@ -891,8 +936,10 @@ pub fn scan_goose_logs_with_options(goose_dir: Option<String>, silent: bool) -> 
                                     Err(_) => continue,
                                 };
 
+                                let file_path_str = file_path.to_string_lossy().to_string();
+
                                 // Check if file is in cache and hasn't been modified
-                                if let Some(cache_entry) = cache_data.files.get(&file_path) {
+                                if let Some(cache_entry) = cache_data.files.get(&file_path_str) {
                                     if !is_file_modified(&file_path, cache_entry.mtime) {
                                         // Use cached records
                                         all_records.extend(cache_entry.records.clone());
@@ -901,25 +948,40 @@ pub fn scan_goose_logs_with_options(goose_dir: Option<String>, silent: bool) -> 
                                     }
                                 }
 
-                                // Parse file and update cache
-                                let records = parse_goose_cli_log_file(&file_path);
-                                all_records.extend(records.clone());
-
-                                // Update cache entry
-                                cache_data.files.insert(
-                                    file_path.clone(),
-                                    CacheEntry {
-                                        mtime: current_mtime,
-                                        records,
-                                    },
-                                );
-                                files_processed += 1;
+                                // Add to files that need processing
+                                files_to_process.push(FileToProcess {
+                                    path: file_path.to_path_buf(),
+                                    project_name: "".to_string(), // Goose logs don't use project names like Claude
+                                    current_mtime,
+                                });
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Second pass: process files in parallel
+    let processed_results: Vec<_> = files_to_process
+        .par_iter()
+        .map(|file_info| {
+            let records = parse_goose_cli_log_file(&file_info.path);
+            (
+                file_info.path.to_string_lossy().to_string(),
+                file_info.current_mtime,
+                records,
+            )
+        })
+        .collect();
+
+    // Third pass: collect results and update cache
+    for (file_path, mtime, records) in processed_results {
+        all_records.extend(records.clone());
+        cache_data
+            .files
+            .insert(file_path, CacheEntry { mtime, records });
+        files_processed += 1;
     }
 
     // Save updated cache
