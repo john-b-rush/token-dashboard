@@ -1,4 +1,5 @@
 use chrono::{TimeZone, Utc};
+use lazy_static::lazy_static;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value};
@@ -6,6 +7,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 // ----- Model Structures -----
 
@@ -157,8 +159,100 @@ lazy_static::lazy_static! {
 
 // ----- Project Name Extraction Functions -----
 
+// Cache for filesystem validation results to avoid repeated I/O
+lazy_static! {
+    static ref PATH_CACHE: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
+}
+
+/// Extract project name using filesystem validation with caching
+fn extract_project_name_with_validation(folder_path: &str) -> Option<String> {
+    let folder_name = Path::new(folder_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+
+    // Remove leading dash if present
+    let folder_name = if let Some(stripped) = folder_name.strip_prefix('-') {
+        stripped
+    } else {
+        folder_name
+    };
+
+    // Check cache first
+    {
+        let cache = PATH_CACHE.lock().unwrap();
+        if let Some(cached_result) = cache.get(folder_name) {
+            return cached_result.clone();
+        }
+    }
+
+    let result = try_filesystem_validation(folder_name);
+
+    // Cache the result
+    {
+        let mut cache = PATH_CACHE.lock().unwrap();
+        cache.insert(folder_name.to_string(), result.clone());
+    }
+
+    result
+}
+
+/// Try multiple path reconstruction strategies with filesystem validation
+fn try_filesystem_validation(folder_name: &str) -> Option<String> {
+    let parts: Vec<&str> = folder_name.split('-').filter(|s| !s.is_empty()).collect();
+
+    if parts.len() < 2 {
+        return None;
+    }
+
+    // Strategy 1: Try different split points for base_path/project_name
+    for split_point in 1..parts.len() {
+        let base_path = format!("/{}", parts[..split_point].join("/"));
+        let project_name = parts[split_point..].join("-");
+
+        if !project_name.is_empty() {
+            let full_path = format!("{}/{}", base_path, project_name);
+            if Path::new(&full_path).exists() {
+                return Some(project_name);
+            }
+        }
+    }
+
+    // Strategy 2: Try common base path patterns
+    let common_bases = vec!["Users", "home", "opt"];
+    for base in common_bases {
+        if let Some(base_idx) = parts.iter().position(|&p| p == base) {
+            // Try paths starting from this base
+            for split_point in (base_idx + 2)..parts.len() {
+                let base_path = format!("/{}", parts[..split_point].join("/"));
+                let project_name = parts[split_point..].join("-");
+
+                if !project_name.is_empty() {
+                    let full_path = format!("{}/{}", base_path, project_name);
+                    if Path::new(&full_path).exists() {
+                        return Some(project_name);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Extract project name from Claude folder path like '-Users-johnrush-repos-chuck-data2'
 pub fn extract_project_name(folder_path: &str) -> String {
+    // Try filesystem validation first
+    if let Some(project_name) = extract_project_name_with_validation(folder_path) {
+        return project_name;
+    }
+
+    // Fallback to original logic if filesystem validation fails
+    extract_project_name_fallback(folder_path)
+}
+
+/// Original project name extraction logic as fallback
+fn extract_project_name_fallback(folder_path: &str) -> String {
     let folder_name = Path::new(folder_path)
         .file_name()
         .and_then(|name| name.to_str())
@@ -1027,7 +1121,8 @@ pub fn scan_all_logs_with_options(
 
 // ----- Report Generation Functions -----
 
-pub type DailyModelReport = HashMap<String, HashMap<String, ModelStats>>;
+pub type DailyModelReport = HashMap<String, HashMap<String, ModelStats>>; // date -> model -> stats
+pub type DailyProjectReport = HashMap<String, HashMap<String, ModelStats>>; // date -> project -> stats
 
 /// Generate daily breakdown of token usage by model with cost information
 pub fn generate_daily_model_report(records: &[UsageRecord]) -> DailyModelReport {
@@ -1078,22 +1173,85 @@ pub fn generate_daily_model_report(records: &[UsageRecord]) -> DailyModelReport 
     daily_model_usage
 }
 
-// ----- Public API Functions -----
+/// Generate daily breakdown of token usage by project with cost information
+pub fn generate_daily_project_report(records: &[UsageRecord]) -> DailyProjectReport {
+    if records.is_empty() {
+        return HashMap::new();
+    }
 
-/// Core function to load data for the dashboard
-pub fn load_token_data() -> Option<DailyModelReport> {
-    load_token_data_with_options(false)
+    // Group by date and project
+    let mut daily_project_usage: HashMap<String, HashMap<String, ModelStats>> = HashMap::new();
+
+    // Process each record
+    for record in records {
+        let date = &record.date;
+        let project = &record.project;
+
+        let project_map = daily_project_usage.entry(date.clone()).or_default();
+
+        let usage = project_map.entry(project.clone()).or_default();
+
+        usage.input_tokens += record.input_tokens;
+        usage.output_tokens += record.output_tokens;
+        usage.cache_creation_tokens += record.cache_creation_input_tokens;
+        usage.cache_read_tokens += record.cache_read_input_tokens;
+
+        let total = record.input_tokens
+            + record.output_tokens
+            + record.cache_creation_input_tokens
+            + record.cache_read_input_tokens;
+
+        usage.total_tokens += total;
+
+        // Calculate costs for this record
+        let costs = calculate_cost(
+            &record.model,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_creation_input_tokens,
+            record.cache_read_input_tokens,
+        );
+
+        usage.input_cost += costs.input_cost;
+        usage.output_cost += costs.output_cost;
+        usage.cache_creation_cost += costs.cache_creation_cost;
+        usage.cache_read_cost += costs.cache_read_cost;
+        usage.total_cost += costs.total_cost;
+    }
+
+    daily_project_usage
 }
 
-/// Core function to load data for the dashboard (with silent option)
-pub fn load_token_data_with_options(silent: bool) -> Option<DailyModelReport> {
+// ----- Public API Functions -----
+
+// Removed deprecated load_token_data functions
+
+/// Struct to hold both model and project reports
+pub struct TokenData {
+    pub model_report: DailyModelReport,
+    pub project_report: DailyProjectReport,
+}
+
+/// Load both model and project data for the dashboard
+pub fn load_complete_token_data() -> Option<TokenData> {
+    load_complete_token_data_with_options(false)
+}
+
+/// Load both model and project data for the dashboard (with silent option)
+pub fn load_complete_token_data_with_options(silent: bool) -> Option<TokenData> {
     let records = scan_all_logs_with_options(None, None, silent);
 
     if records.is_empty() {
         return None;
     }
 
-    Some(generate_daily_model_report(&records))
+    let model_report = generate_daily_model_report(&records);
+    let project_report = generate_daily_project_report(&records);
+
+    Some(TokenData {
+        model_report,
+        project_report,
+    })
 }
 
 #[cfg(test)]
@@ -1421,6 +1579,130 @@ mod tests {
         assert!((gpt4o_stats.input_cost - expected_gpt4o_input_cost).abs() < 1e-8);
         assert!((gpt4o_stats.output_cost - expected_gpt4o_output_cost).abs() < 1e-8);
         assert!((gpt4o_stats.total_cost - expected_gpt4o_total_cost).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_daily_project_report_generation() {
+        // Create test records for different days and projects
+        let records = vec![
+            UsageRecord {
+                project: "project1".to_string(),
+                date: "2023-06-15".to_string(),
+                timestamp: "2023-06-15T10:30:00Z".to_string(),
+                model: "Claude 3 Opus".to_string(),
+                input_tokens: 1000,
+                output_tokens: 500,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                total_tokens: Some(1500),
+                reasoning_tokens: None,
+                session_id: "session1".to_string(),
+                file_path: "/path/to/file1".to_string(),
+                source: Some("claude".to_string()),
+            },
+            UsageRecord {
+                project: "project1".to_string(),
+                date: "2023-06-15".to_string(),
+                timestamp: "2023-06-15T11:30:00Z".to_string(),
+                model: "Claude 3 Sonnet".to_string(),
+                input_tokens: 2000,
+                output_tokens: 1000,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                total_tokens: Some(3000),
+                reasoning_tokens: None,
+                session_id: "session2".to_string(),
+                file_path: "/path/to/file1".to_string(),
+                source: Some("claude".to_string()),
+            },
+            UsageRecord {
+                project: "project2".to_string(),
+                date: "2023-06-15".to_string(),
+                timestamp: "2023-06-15T12:30:00Z".to_string(),
+                model: "GPT-4o".to_string(),
+                input_tokens: 3000,
+                output_tokens: 1500,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                total_tokens: Some(4500),
+                reasoning_tokens: None,
+                session_id: "session3".to_string(),
+                file_path: "/path/to/file2".to_string(),
+                source: Some("goose_cli".to_string()),
+            },
+            UsageRecord {
+                project: "project3".to_string(),
+                date: "2023-06-16".to_string(),
+                timestamp: "2023-06-16T10:30:00Z".to_string(),
+                model: "GPT-4o".to_string(),
+                input_tokens: 4000,
+                output_tokens: 2000,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                total_tokens: Some(6000),
+                reasoning_tokens: None,
+                session_id: "session4".to_string(),
+                file_path: "/path/to/file3".to_string(),
+                source: Some("goose_cli".to_string()),
+            },
+        ];
+
+        // Generate the project report
+        let project_report = generate_daily_project_report(&records);
+
+        // Verify the report structure
+        assert_eq!(project_report.len(), 2); // Two different dates
+
+        // Check the first day
+        let day1 = project_report.get("2023-06-15").expect("Missing day 2023-06-15");
+        assert_eq!(day1.len(), 2); // Two projects: project1 and project2
+
+        // Verify project1 stats
+        let project1_stats = day1.get("project1").expect("Missing project1 stats");
+        assert_eq!(project1_stats.input_tokens, 3000); // 1000 + 2000
+        assert_eq!(project1_stats.output_tokens, 1500); // 500 + 1000
+        assert_eq!(project1_stats.total_tokens, 4500); // 3000 + 1500
+
+        // Verify project2 stats
+        let project2_stats = day1.get("project2").expect("Missing project2 stats");
+        assert_eq!(project2_stats.input_tokens, 3000);
+        assert_eq!(project2_stats.output_tokens, 1500);
+        assert_eq!(project2_stats.total_tokens, 4500);
+
+        // Check the second day
+        let day2 = project_report.get("2023-06-16").expect("Missing day 2023-06-16");
+        assert_eq!(day2.len(), 1); // One project: project3
+
+        // Verify project3 stats
+        let project3_stats = day2.get("project3").expect("Missing project3 stats");
+        assert_eq!(project3_stats.input_tokens, 4000);
+        assert_eq!(project3_stats.output_tokens, 2000);
+        assert_eq!(project3_stats.total_tokens, 6000);
+    }
+
+    #[test]
+    fn test_load_complete_token_data() {
+        // Create a temporary directory for testing
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        
+        // Write a mock file to ensure we get our test record
+        let test_file = temp_dir.path().join("test.jsonl");
+        let mut file = File::create(&test_file).expect("Failed to create test file");
+        writeln!(&mut file, r#"{{"type":"assistant","timestamp":"2023-06-15T10:30:00Z","sessionId":"test-session","message":{{"model":"claude-3-opus","usage":{{"input_tokens":1000,"output_tokens":500}}}}}}"#).unwrap();
+
+        // Test the TokenData structure
+        let token_data = load_complete_token_data_with_options(true);
+        
+        // Verify the structure contains both model and project reports
+        assert!(token_data.is_some());
+        
+        let data = token_data.unwrap();
+        // Both reports should have data
+        assert!(!data.model_report.is_empty());
+        assert!(!data.project_report.is_empty());
+        
+        // Both reports should have the same dates
+        assert_eq!(data.model_report.keys().len(), data.project_report.keys().len());
     }
 
     #[test]

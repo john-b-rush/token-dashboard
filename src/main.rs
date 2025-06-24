@@ -24,10 +24,16 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::stdout;
 use std::time::Instant;
 
-// Use the ModelStats from our parser module
-use parser::ModelStats;
-// Define the report type
-type DailyModelReport = HashMap<String, HashMap<String, ModelStats>>; // date -> model -> stats
+// Use the parser module types
+use parser::{ModelStats, TokenData, DailyModelReport};
+
+// View mode for choosing how to group data
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum ViewMode {
+    #[default]
+    ByModel,
+    ByProject,
+}
 
 // Totals structure for aggregated data
 #[derive(Debug, Clone)]
@@ -166,12 +172,12 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn load_data() -> Option<DailyModelReport> {
-    // Use our Rust parser to get the data directly
+fn load_data() -> Option<TokenData> {
+    // Use our Rust parser to get the complete data directly
     eprintln!("Loading token data...");
-    let result = parser::load_token_data();
+    let result = parser::load_complete_token_data();
     match &result {
-        Some(data) => eprintln!("Loaded data for {} dates", data.len()),
+        Some(data) => eprintln!("Loaded data for {} dates", data.model_report.len()),
         None => eprintln!("No data found"),
     }
     result
@@ -179,9 +185,15 @@ fn load_data() -> Option<DailyModelReport> {
 
 fn draw_ui<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
-    data: &DailyModelReport,
+    token_data: &TokenData,
     aggregates: &Aggregates,
+    view_mode: ViewMode,
 ) -> std::io::Result<()> {
+    // Select the data based on view mode
+    let data = match view_mode {
+        ViewMode::ByModel => &token_data.model_report,
+        ViewMode::ByProject => &token_data.project_report,
+    };
     terminal.draw(|f| {
         let full = f.size();
         let layout = Layout::default()
@@ -190,8 +202,13 @@ fn draw_ui<B: ratatui::backend::Backend>(
             .constraints([Constraint::Length(7), Constraint::Min(0)])
             .split(full);
 
+        let view_mode_text = match view_mode {
+            ViewMode::ByModel => "Mode: By Model (M)",
+            ViewMode::ByProject => "Mode: By Project (P)",
+        };
+        
         let summary_block = Block::default()
-            .title(" Token Usage Dashboard ")
+            .title(format!(" Token Usage Dashboard - {} ", view_mode_text))
             .borders(Borders::ALL);
 
         let summary_text = Paragraph::new(format!(
@@ -229,10 +246,10 @@ fn draw_ui<B: ratatui::backend::Backend>(
             .split(chart_layout[1]);
 
         // Render actual charts instead of placeholder blocks
-        render_stacked_bar(f, top_row[0], data, true); // Tokens/day
-        render_stacked_bar(f, top_row[1], data, false); // Cost/day
-        render_today_bar(f, bottom_row[0], data, true); // Today's tokens
-        render_today_bar(f, bottom_row[1], data, false); // Today's cost
+        render_stacked_bar(f, top_row[0], data, true, view_mode); // Tokens/day
+        render_stacked_bar(f, top_row[1], data, false, view_mode); // Cost/day
+        render_today_bar(f, bottom_row[0], data, true, view_mode); // Today's tokens
+        render_today_bar(f, bottom_row[1], data, false, view_mode); // Today's cost
     })?;
     Ok(())
 }
@@ -242,6 +259,7 @@ fn render_stacked_bar(
     area: Rect,
     data: &DailyModelReport,
     is_tokens: bool,
+    view_mode: ViewMode,
 ) {
     // Split area into legend (left) and chart (right) sections
     let sections = Layout::default()
@@ -382,12 +400,17 @@ fn render_stacked_bar(
         .collect();
 
     // Render the chart
+    let chart_title = match view_mode {
+        ViewMode::ByModel => {
+            if is_tokens { "Tokens/day by Model" } else { "Cost/day ($) by Model" }
+        },
+        ViewMode::ByProject => {
+            if is_tokens { "Tokens/day by Project" } else { "Cost/day ($) by Project" }
+        },
+    };
+    
     let chart = Chart::new(datasets)
-        .block(Block::default().borders(Borders::ALL).title(if is_tokens {
-            "Tokens/day"
-        } else {
-            "Cost/day ($)"
-        }))
+        .block(Block::default().borders(Borders::ALL).title(chart_title))
         .x_axis(
             Axis::default()
                 .title("Date")
@@ -406,8 +429,14 @@ fn render_stacked_bar(
     // Render the legend separately with matching colors (vertical format)
     use ratatui::text::{Line, Text};
 
+    // Get the legend title based on view mode
+    let legend_title = match view_mode {
+        ViewMode::ByModel => "All Models:",
+        ViewMode::ByProject => "All Projects:",
+    };
+
     let mut legend_lines = vec![
-        Line::from("All Models:").style(Style::default().fg(Color::White)),
+        Line::from(legend_title).style(Style::default().fg(Color::White)),
         Line::from(""), // Empty line for spacing
     ];
 
@@ -444,13 +473,13 @@ fn render_stacked_bar(
     f.render_widget(legend_paragraph, legend_area);
 }
 
-fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport, is_tokens: bool) {
+fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport, is_tokens: bool, view_mode: ViewMode) {
     let today = Utc::now().naive_utc().date().format("%Y-%m-%d").to_string();
     let today_data = match data.get(&today) {
         Some(val) => val,
         None => {
             // Show empty chart if there's no data for today
-            render_empty_bar(f, area, &today, is_tokens);
+            render_empty_bar(f, area, &today, is_tokens, view_mode);
             return;
         }
     };
@@ -495,9 +524,15 @@ fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport,
         .map(|(s, v)| (s.content.as_ref(), *v))
         .collect();
 
+    let category = match view_mode {
+        ViewMode::ByModel => "Model",
+        ViewMode::ByProject => "Project",
+    };
+
     let title = if is_tokens {
         format!(
-            "Today: Tokens by Model (Max: {})",
+            "Today: Tokens by {} (Max: {})",
+            category,
             if max_val >= 1_000_000.0 {
                 format!("{:.1}M", max_val / 1_000_000.0)
             } else if max_val >= 1_000.0 {
@@ -507,7 +542,7 @@ fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport,
             }
         )
     } else {
-        format!("Today: Cost by Model (Max: ${:.2})", max_val)
+        format!("Today: Cost by {} (Max: ${:.2})", category, max_val)
     };
 
     let bars = BarChart::default()
@@ -531,11 +566,16 @@ fn render_today_bar(f: &mut ratatui::Frame, area: Rect, data: &DailyModelReport,
     f.render_widget(bars, area);
 }
 
-fn render_empty_bar(f: &mut ratatui::Frame, area: Rect, _date: &str, is_tokens: bool) {
+fn render_empty_bar(f: &mut ratatui::Frame, area: Rect, _date: &str, is_tokens: bool, view_mode: ViewMode) {
+    let category = match view_mode {
+        ViewMode::ByModel => "Model",
+        ViewMode::ByProject => "Project",
+    };
+
     let title = if is_tokens {
-        "Today: Tokens by Model (No data)".to_string()
+        format!("Today: Tokens by {} (No data)", category)
     } else {
-        "Today: Cost by Model (No data)".to_string()
+        format!("Today: Cost by {} (No data)", category)
     };
 
     let bars = BarChart::default()
@@ -566,6 +606,7 @@ fn render_recent_bar(
     data: &HashMap<String, ModelStats>,
     date: &str,
     is_tokens: bool,
+    view_mode: ViewMode,
 ) {
     let mut items: Vec<(&String, f64)> = data
         .iter()
@@ -607,10 +648,16 @@ fn render_recent_bar(
         .map(|(s, v)| (s.content.as_ref(), *v))
         .collect();
 
+    let category = match view_mode {
+        ViewMode::ByModel => "Model",
+        ViewMode::ByProject => "Project",
+    };
+
     let title = if is_tokens {
         format!(
-            "{}: Tokens by Model (Max: {})",
+            "{}: Tokens by {} (Max: {})",
             date,
+            category,
             if max_val >= 1_000_000.0 {
                 format!("{:.1}M", max_val / 1_000_000.0)
             } else if max_val >= 1_000.0 {
@@ -620,7 +667,7 @@ fn render_recent_bar(
             }
         )
     } else {
-        format!("{}: Cost by Model (Max: ${:.2})", date, max_val)
+        format!("{}: Cost by {} (Max: ${:.2})", date, category, max_val)
     };
 
     let bars = BarChart::default()
@@ -665,8 +712,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let initial_data = load_data();
         match initial_data {
             Some(data) => {
-                eprintln!("SUCCESS: Loaded data for {} dates", data.len());
-                for (date, models) in data.iter().take(3) {
+                eprintln!("SUCCESS: Loaded data for {} dates", data.model_report.len());
+                for (date, models) in data.model_report.iter().take(3) {
                     eprintln!("  Date: {}, Models: {}", date, models.len());
                 }
                 return Ok(());
@@ -701,7 +748,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Use the pre-loaded data and compute initial aggregates
     let mut current_data = initial_data;
-    let mut current_aggregates = current_data.as_ref().map(compute_aggregates);
+    let mut current_aggregates = current_data.as_ref().map(|data| compute_aggregates(&data.model_report));
+    
+    // Track current view mode
+    let mut current_view_mode = ViewMode::ByModel;
 
     while running.load(Ordering::SeqCst) {
         // Input check first
@@ -709,8 +759,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(true) => {
                 match read() {
                     Ok(Event::Key(key)) => {
-                        if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
-                            break;
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => break,
+                            KeyCode::Char('m') | KeyCode::Char('M') => {
+                                current_view_mode = ViewMode::ByModel;
+                                // Update aggregates based on the new view mode
+                                if let Some(data) = &current_data {
+                                    current_aggregates = Some(compute_aggregates(&data.model_report));
+                                }
+                            },
+                            KeyCode::Char('p') | KeyCode::Char('P') => {
+                                current_view_mode = ViewMode::ByProject;
+                                // Update aggregates based on the new view mode
+                                if let Some(data) = &current_data {
+                                    current_aggregates = Some(compute_aggregates(&data.project_report));
+                                }
+                            },
+                            _ => {}
                         }
                     }
                     Ok(_) => {} // Other events
@@ -730,8 +795,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Refresh data on interval
         if last_update.elapsed() >= refresh_interval {
             // Load data silently on refresh
-            if let Some(data) = parser::load_token_data_with_options(true) {
-                current_aggregates = Some(compute_aggregates(&data));
+            if let Some(data) = parser::load_complete_token_data_with_options(true) {
+                // Compute aggregates based on current view mode
+                let report = match current_view_mode {
+                    ViewMode::ByModel => &data.model_report,
+                    ViewMode::ByProject => &data.project_report,
+                };
+                current_aggregates = Some(compute_aggregates(report));
                 current_data = Some(data);
             }
             last_update = Instant::now();
@@ -740,7 +810,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Always try to render
         match (&current_data, &current_aggregates) {
             (Some(data), Some(aggregates)) => {
-                if let Err(e) = draw_ui(terminal_guard.terminal_mut(), data, aggregates) {
+                if let Err(e) = draw_ui(terminal_guard.terminal_mut(), data, aggregates, current_view_mode) {
                     eprintln!("Error drawing UI: {}", e);
                     break;
                 }
