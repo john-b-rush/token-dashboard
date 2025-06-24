@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Claude Token Usage Parser
+Token Usage Parser
 
-Parses Claude conversation logs from ~/.claude/projects/ and extracts token usage statistics.
+Parses Claude Code and Goose conversation logs and extracts token usage statistics.
 Generates reports by date, project, and model.
 """
 
@@ -83,6 +83,14 @@ MODEL_PRICING = {
     "o3": {
         "input_tokens": 0.015,  # Estimated pricing for o3
         "output_tokens": 0.045,
+        "input_tokens_batch": None,
+        "output_tokens_batch": None,
+        "input_tokens_cache_write": None,
+        "input_tokens_cache_read": 0.0075,
+    },
+    "o1": {
+        "input_tokens": 0.015,  # o1 pricing
+        "output_tokens": 0.06,
         "input_tokens_batch": None,
         "output_tokens_batch": None,
         "input_tokens_cache_write": None,
@@ -742,7 +750,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Parse Claude and Goose token usage from conversation logs"
+        description="Parse token usage from Claude and Goose conversation logs"
     )
     parser.add_argument(
         "--claude-dir",
