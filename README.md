@@ -11,7 +11,8 @@ A real-time terminal dashboard for tracking Claude and OpenAI token usage and co
 - 💰 **Cost tracking** - Accurate pricing for all major models including cache costs
 - 🎯 **Smart filtering** - Shows top 5 most expensive models with legend
 - 📈 **Multiple views** - Lifetime, month-to-date, and daily spending
-- 🚀 **Fast performance** - Intelligent caching system for quick updates
+- 🚀 **Fast performance** - Parallel log scanning with intelligent caching for quick updates
+- ⚡ **Pure Rust** - No external runtime dependencies, single binary execution
 - 🔧 **Multi-source** - Supports both Claude Code and Goose CLI logs
 
 ## Supported Models
@@ -124,16 +125,23 @@ The dashboard automatically detects log directories. If you need custom paths, t
 ### Components
 
 - **`src/main.rs`** - Terminal UI dashboard built with ratatui
-- **`src/parser.rs`** - Native Rust parser for conversation logs and cost calculation
-- **Cache system** - Intelligent file caching for fast performance
+- **`src/parser.rs`** - Native Rust parser with parallel processing for conversation logs and cost calculation
+- **Cache system** - Intelligent file caching with modification detection for fast performance
 
 ### Data Flow
 
-1. **Parser** scans `.jsonl` conversation files and Goose logs
-2. **Extracts** token usage and model information  
+1. **Parser** scans `.jsonl` conversation files and Goose logs in parallel
+2. **Extracts** token usage and model information concurrently
 3. **Calculates** costs using built-in pricing tables
 4. **Caches** results with intelligent modification detection
-5. **Dashboard** renders real-time UI with live data
+5. **Dashboard** renders real-time UI with pre-computed aggregates
+
+### Performance Optimizations
+
+- **Parallel Processing** - Uses `rayon` for concurrent file scanning across CPU cores
+- **Smart Caching** - Only re-parses files when modification time changes
+- **UI Aggregates** - Pre-computed totals to avoid recalculation on every frame
+- **Pure Rust** - No Python or Node.js runtime overhead, compiles to single binary
 
 ### Cost Calculation
 
@@ -203,8 +211,9 @@ m.insert("New Model", ModelPricing {
 
 ### Performance Issues
 - Clear cache if it becomes corrupted: `rm -rf ~/.cache/claude-token-burn/`
-- Large log directories may take time on first scan
-- Subsequent runs should be fast due to caching
+- Large log directories benefit from parallel processing on first scan
+- Subsequent runs should be very fast due to intelligent caching
+- Modern multi-core systems will see significant performance improvements
 
 ## Future Work
 
