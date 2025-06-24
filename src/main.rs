@@ -11,7 +11,6 @@ use std::sync::{
 };
 use std::{process::Command, thread, time::Duration};
 
-use chrono;
 use chrono::Utc;
 use crossterm::event::{poll, read, Event, KeyCode};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
