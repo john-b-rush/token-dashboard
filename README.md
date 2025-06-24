@@ -1,6 +1,6 @@
 # Token Usage Dashboard
 
-A real-time terminal dashboard for tracking Claude and OpenAI token usage and costs across all your projects when you use Claude Code or Goose CLI. This dashboard provides a comprehensive overview of your token consumption, costs, and trends, helping you manage your AI expenses effectively.
+A real-time terminal dashboard for tracking Claude and OpenAI token usage and costs across your projects when using Claude Code or Goose CLI. Monitor and analyze both model-based and project-based consumption patterns.
 
 ![Dashboard Screenshot](screenshot.png)
 
@@ -9,10 +9,9 @@ A real-time terminal dashboard for tracking Claude and OpenAI token usage and co
 - 🔄 **Real-time monitoring** - Updates every 10 seconds
 - 📊 **Visual charts** - Line graphs for usage trends, bar charts for daily breakdowns
 - 💰 **Cost tracking** - Accurate pricing for all major models including cache costs
-- 🎯 **Smart filtering** - Shows top 5 most expensive models with legend
-- 📈 **Multiple views** - Lifetime, month-to-date, and daily spending
-- 🚀 **Fast performance** - Parallel log scanning with intelligent caching for quick updates
-- ⚡ **Pure Rust** - No external runtime dependencies, single binary execution
+- 🎯 **Dual views** - Toggle between Model and Project perspectives
+- 📈 **Multiple timeframes** - Lifetime, month-to-date, and daily spending
+- 🚀 **Fast performance** - Parallel log scanning with intelligent caching
 - 🔧 **Multi-source** - Supports both Claude Code and Goose CLI logs
 
 ## Supported Models
@@ -65,183 +64,85 @@ cargo run
 ```
 
 ### Controls
-- **`q` or `Esc`** - Quit the dashboard
+- **`M`** - Switch to Model View (group data by AI model)
+- **`P`** - Switch to Project View (group data by codebase project)
+- **`Q` or `Esc`** - Quit the dashboard
 - **Auto-refresh** - Updates every 10 seconds
 
 ### Understanding the Display
 
-The dashboard shows four main sections:
+The dashboard shows five main sections:
 
-1. **Summary Panel** (top)
+1. **Summary Panel** (top-left)
    - Lifetime spend and token counts
    - Month-to-date totals
    - Today's usage and costs
 
-2. **Usage Trends** (top-left chart)
-   - Daily token usage over time
-   - Shows top 5 models by total spend
-   - Color-coded lines with legend
+2. **Controls Panel** (top-right)
+   - Available keyboard shortcuts
+   - Shows current view mode
 
-3. **Cost Trends** (top-right chart)  
+3. **Usage Trends** (middle-left chart)
+   - Daily token usage over time
+   - Color-coded by model or project
+   - View changes based on current mode (M/P)
+
+4. **Cost Trends** (middle-right chart)  
    - Daily cost over time
-   - Same top 5 model filtering
+   - Same grouping as Usage Trends
    - Dollar amounts on Y-axis
 
-4. **Daily Breakdowns** (bottom charts)
-   - Today's usage by model (tokens and cost)
+5. **Daily Breakdowns** (bottom charts)
+   - Today's usage by model or project
    - Bar charts showing current day totals
 
-## Where does the data come from?
+## Data Sources & Configuration
 
-The dashboard automatically scans conversation logs from:
+The dashboard automatically scans logs from:
 
-- **Claude Code logs**: `~/.claude/projects/` - Contains `.jsonl` files with conversation history
-- **Goose CLI logs**: `~/.local/state/goose/logs/cli/` - Contains session logs with token usage
+- **Claude Code**: `~/.claude/projects/` - JSONL conversation files
+- **Goose CLI**: `~/.local/state/goose/logs/cli/` - Session logs
 
-These directories contain the raw conversation data that gets parsed to extract token usage and calculate costs. If you don't see any data, make sure you have used Claude Code or Goose CLI and have conversation logs in these locations.
+Performance optimizations:
+- **Caching**: `~/.cache/claude-token-burn/` - Only re-parses modified files
+- **Parallel Processing**: Uses all CPU cores for fast scanning
+- **Clear cache**: `rm -rf ~/.cache/claude-token-burn/` if needed
 
-## Configuration
+## Project Views
 
-### Data Sources
+One of the key features is the ability to toggle between different perspectives:
 
-The dashboard automatically scans these locations:
+- **Model View (M key)**: Groups all usage data by AI model
+  - See which models cost the most across all projects
+  - Identify high-token-consumption models
 
-- **Claude Code logs**: `~/.claude/projects/`
-- **Goose CLI logs**: `~/.local/state/goose/logs/cli/`
+- **Project View (P key)**: Groups usage data by codebase project
+  - Track which projects consume the most tokens
+  - Monitor spending across different repositories
 
-### Cache Management
+## Installation & Usage
 
-Parser data is cached for performance:
-- **Cache location**: `~/.cache/claude-token-burn/`
-- **Cache behavior**: Only re-parses modified files
-- **Clear cache**: `rm -rf ~/.cache/claude-token-burn/`
-
-### Custom Paths
-
-The dashboard automatically detects log directories. If you need custom paths, they can be configured in the source code.
-
-## Architecture
-
-### Components
-
-- **`src/main.rs`** - Terminal UI dashboard built with ratatui
-- **`src/parser.rs`** - Native Rust parser with parallel processing for conversation logs and cost calculation
-- **Cache system** - Intelligent file caching with modification detection for fast performance
-
-### Data Flow
-
-1. **Parser** scans `.jsonl` conversation files and Goose logs in parallel
-2. **Extracts** token usage and model information concurrently
-3. **Calculates** costs using built-in pricing tables
-4. **Caches** results with intelligent modification detection
-5. **Dashboard** renders real-time UI with pre-computed aggregates
-
-### Performance Optimizations
-
-- **Parallel Processing** - Uses `rayon` for concurrent file scanning across CPU cores
-- **Smart Caching** - Only re-parses files when modification time changes
-- **UI Aggregates** - Pre-computed totals to avoid recalculation on every frame
-- **Pure Rust** - No Python or Node.js runtime overhead, compiles to single binary
-
-### Cost Calculation
-
-Costs are calculated using official pricing:
-- **Input tokens** - Standard per-model rates
-- **Output tokens** - Higher rates for generation
-- **Cache creation** - One-time cost for prompt caching
-- **Cache reads** - Reduced cost for cached content
-
-## Development
-
-### Project Structure
-```
-token-dashboard/
-├── src/
-│   ├── main.rs          # Dashboard UI code
-│   └── parser.rs        # Native Rust log parser
-├── Cargo.toml           # Rust dependencies
-├── LICENSE              # MIT license
-└── README.md            # This file
-```
-
-### Building
 ```bash
-# Debug build
-cargo build
-
-# Release build (faster)
+# Build the dashboard
 cargo build --release
 
-# Run with live reload during development
+# Run with cargo
 cargo run
-```
 
-### Adding New Models
-
-1. **Add pricing** to `MODEL_PRICING` in `src/parser.rs`
-2. **Add normalization** logic in `normalize_model_name()`
-3. **Test** with sample data
-
-Example:
-```rust
-m.insert("New Model", ModelPricing {
-    input_tokens: 0.005,
-    output_tokens: 0.015,
-    input_tokens_cache_write: Some(0.00625),
-    input_tokens_cache_read: Some(0.0005),
-});
+# Or use the release binary
+./target/release/token-dashboard
 ```
 
 ## Troubleshooting
 
-### No Data Showing
-- Check that you have Claude Code or Goose conversation logs
-- Verify log directories exist: `~/.claude/projects/` or `~/.local/state/goose/logs/cli/`
-- Test data loading: `cargo run -- --test`
-
-### Costs Showing as $0
-- Model might not have pricing defined
-- Check `normalize_model_name()` function maps your model correctly
-- Verify pricing table includes the normalized model name
-
-### Terminal Display Issues
-- Ensure terminal supports colors and is large enough
-- Try different terminal emulators
-- Check that you're running in an actual TTY (not piped output)
-
-### Performance Issues
-- Clear cache if it becomes corrupted: `rm -rf ~/.cache/claude-token-burn/`
-- Large log directories benefit from parallel processing on first scan
-- Subsequent runs should be very fast due to intelligent caching
-- Modern multi-core systems will see significant performance improvements
-
-## Future Work
-
-1. **Single-binary distribution** – `cargo install token-dashboard` support
-2. **Plugin system** – allow new log sources (OpenAI audit logs, Azure billing) via Rust trait objects
-3. **Configuration file** – YAML-based pricing and settings configuration
-
-## Contributing
-
-1. **Fork** the repository
-2. **Create** a feature branch
-3. **Make** your changes
-4. **Test** thoroughly
-5. **Submit** a pull request
-
-### Areas for Contribution
-- Additional model support
-- New visualization types
-- Export capabilities
-- Configuration options
-- Performance improvements
+- **No data?** Verify log directories exist and contain files
+- **Test data loading**: `cargo run -- --test`
+- **Display issues**: Ensure terminal supports colors and is large enough
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License
 
-## Acknowledgments
+## Credits
 
-- Built with [ratatui](https://github.com/ratatui-org/ratatui) for terminal UI
-- Supports [Claude Code](https://claude.ai/code) and [Goose](https://github.com/square/goose) workflows
-- Pricing data from official Anthropic and OpenAI documentation
+Built with [ratatui](https://github.com/ratatui-org/ratatui) for terminal UI rendering.
