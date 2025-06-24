@@ -70,11 +70,12 @@ pub struct CacheData {
 }
 
 // Model pricing data structure
+#[derive(Clone, Copy)]
 pub struct ModelPricing {
     input_tokens: f64,
     output_tokens: f64,
-    input_tokens_cache_write: Option<f64>,
-    input_tokens_cache_read: Option<f64>,
+    input_tokens_cache_write: f64,
+    input_tokens_cache_read: f64,
 }
 
 // ----- Model Pricing Constants -----
@@ -86,69 +87,69 @@ lazy_static::lazy_static! {
         m.insert("Opus 4", ModelPricing {
             input_tokens: 0.015,
             output_tokens: 0.075,
-            input_tokens_cache_write: Some(0.01875),
-            input_tokens_cache_read: Some(0.0015),
+            input_tokens_cache_write: 0.01875,
+            input_tokens_cache_read: 0.0015,
         });
         m.insert("Sonnet 4", ModelPricing {
             input_tokens: 0.003,
             output_tokens: 0.015,
-            input_tokens_cache_write: Some(0.00375),
-            input_tokens_cache_read: Some(0.0003),
+            input_tokens_cache_write: 0.00375,
+            input_tokens_cache_read: 0.0003,
         });
         m.insert("Sonnet 3.7", ModelPricing {
             input_tokens: 0.003,
             output_tokens: 0.015,
-            input_tokens_cache_write: Some(0.00375),
-            input_tokens_cache_read: Some(0.0003),
+            input_tokens_cache_write: 0.00375,
+            input_tokens_cache_read: 0.0003,
         });
         m.insert("Claude 3.5 Sonnet", ModelPricing {
             input_tokens: 0.003,
             output_tokens: 0.015,
-            input_tokens_cache_write: Some(0.00375),
-            input_tokens_cache_read: Some(0.0003),
+            input_tokens_cache_write: 0.00375,
+            input_tokens_cache_read: 0.0003,
         });
         m.insert("Claude 3.5 Haiku", ModelPricing {
             input_tokens: 0.0008,
             output_tokens: 0.004,
-            input_tokens_cache_write: Some(0.001),
-            input_tokens_cache_read: Some(0.00008),
+            input_tokens_cache_write: 0.001,
+            input_tokens_cache_read: 0.00008,
         });
         m.insert("Claude 3 Opus", ModelPricing {
             input_tokens: 0.015,
             output_tokens: 0.075,
-            input_tokens_cache_write: None,
-            input_tokens_cache_read: None,
+            input_tokens_cache_write: 0.0,
+            input_tokens_cache_read: 0.0,
         });
         // OpenAI models
         m.insert("GPT-4o", ModelPricing {
             input_tokens: 0.005,
             output_tokens: 0.015,
-            input_tokens_cache_write: None,
-            input_tokens_cache_read: None,
+            input_tokens_cache_write: 0.0,
+            input_tokens_cache_read: 0.0,
         });
         m.insert("GPT-4", ModelPricing {
             input_tokens: 0.03,
             output_tokens: 0.06,
-            input_tokens_cache_write: None,
-            input_tokens_cache_read: None,
+            input_tokens_cache_write: 0.0,
+            input_tokens_cache_read: 0.0,
         });
         m.insert("o3", ModelPricing {
             input_tokens: 0.015,
             output_tokens: 0.045,
-            input_tokens_cache_write: None,
-            input_tokens_cache_read: Some(0.0075),
+            input_tokens_cache_write: 0.0,
+            input_tokens_cache_read: 0.0075,
         });
         m.insert("o1", ModelPricing {
             input_tokens: 0.015,
             output_tokens: 0.06,
-            input_tokens_cache_write: None,
-            input_tokens_cache_read: Some(0.0075),
+            input_tokens_cache_write: 0.0,
+            input_tokens_cache_read: 0.0075,
         });
         m.insert("o4-mini", ModelPricing {
             input_tokens: 0.0003,
             output_tokens: 0.0012,
-            input_tokens_cache_write: None,
-            input_tokens_cache_read: Some(0.00015),
+            input_tokens_cache_write: 0.0,
+            input_tokens_cache_read: 0.00015,
         });
         m
     };
@@ -267,14 +268,16 @@ pub fn calculate_cost(
 
     let output_cost = (output_tokens as f64 / 1000.0) * pricing.output_tokens;
 
-    let cache_creation_cost = match pricing.input_tokens_cache_write {
-        Some(rate) => (cache_creation_tokens as f64 / 1000.0) * rate,
-        None => 0.0,
+    let cache_creation_cost = if pricing.input_tokens_cache_write > 0.0 {
+        (cache_creation_tokens as f64 / 1000.0) * pricing.input_tokens_cache_write
+    } else {
+        0.0
     };
 
-    let cache_read_cost = match pricing.input_tokens_cache_read {
-        Some(rate) => (cache_read_tokens as f64 / 1000.0) * rate,
-        None => 0.0,
+    let cache_read_cost = if pricing.input_tokens_cache_read > 0.0 {
+        (cache_read_tokens as f64 / 1000.0) * pricing.input_tokens_cache_read
+    } else {
+        0.0
     };
 
     let total_cost = input_cost + output_cost + cache_creation_cost + cache_read_cost;
