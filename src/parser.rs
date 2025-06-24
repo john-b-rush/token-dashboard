@@ -768,7 +768,7 @@ pub fn parse_goose_cli_log_file(file_path: &Path) -> Vec<UsageRecord> {
 pub fn get_cache_path(dir: &str) -> PathBuf {
     let cache_dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from(".cache"))
-        .join("claude-token-burn");
+        .join("token-dashboard");
 
     fs::create_dir_all(&cache_dir).unwrap_or(());
 

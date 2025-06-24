@@ -104,9 +104,9 @@ The dashboard automatically scans logs from:
 - **Goose CLI**: `~/.local/state/goose/logs/cli/` - Session logs
 
 Performance optimizations:
-- **Caching**: `~/.cache/claude-token-burn/` - Only re-parses modified files
+- **Caching**: `~/.cache/token-dashboard/` - Only re-parses modified files
 - **Parallel Processing**: Uses all CPU cores for fast scanning
-- **Clear cache**: `rm -rf ~/.cache/claude-token-burn/` if needed
+- **Clear cache**: `rm -rf ~/.cache/token-dashboard/` if needed
 
 ## Project Views
 
