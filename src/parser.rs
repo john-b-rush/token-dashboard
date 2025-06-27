@@ -828,12 +828,6 @@ pub fn is_file_modified(file_path: &Path, cached_mtime: f64) -> bool {
 
 // ----- Main Scanning Functions -----
 
-/// Scan all Claude log files and extract token usage data with caching
-#[allow(dead_code)]
-pub fn scan_claude_logs(claude_dir: Option<String>) -> Vec<UsageRecord> {
-    scan_claude_logs_with_options(claude_dir, false)
-}
-
 /// Structure to hold file information for processing
 #[derive(Debug, Clone)]
 struct FileToProcess {
@@ -971,12 +965,6 @@ pub fn scan_claude_logs_with_options(claude_dir: Option<String>, silent: bool) -
     all_records
 }
 
-/// Scan all goose CLI log files and extract token usage data with caching
-#[allow(dead_code)]
-pub fn scan_goose_logs(goose_dir: Option<String>) -> Vec<UsageRecord> {
-    scan_goose_logs_with_options(goose_dir, false)
-}
-
 /// Scan all goose CLI log files and extract token usage data with caching (with silent option)
 pub fn scan_goose_logs_with_options(goose_dir: Option<String>, silent: bool) -> Vec<UsageRecord> {
     let goose_path = if let Some(dir) = goose_dir {
@@ -1092,12 +1080,6 @@ pub fn scan_goose_logs_with_options(goose_dir: Option<String>, silent: bool) -> 
     }
 
     all_records
-}
-
-/// Scan both Claude and goose logs and combine the results
-#[allow(dead_code)]
-pub fn scan_all_logs(claude_dir: Option<String>, goose_dir: Option<String>) -> Vec<UsageRecord> {
-    scan_all_logs_with_options(claude_dir, goose_dir, false)
 }
 
 /// Scan both Claude and goose logs and combine the results (with silent option)

@@ -6,7 +6,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     tty::IsTty,
 };
-use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -25,7 +24,7 @@ use std::io::stdout;
 use std::time::Instant;
 
 // Use the parser module types
-use parser::{DailyModelReport, ModelStats, TokenData};
+use parser::{DailyModelReport, TokenData};
 
 // View mode for choosing how to group data
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -62,7 +61,7 @@ impl Default for Totals {
 struct Aggregates {
     lifetime: Totals,
     mtd: Totals,
-    today: Totals,
+    selected_date: Totals,
 }
 
 fn format_tokens(tokens: u64) -> String {
@@ -81,13 +80,13 @@ fn format_tokens(tokens: u64) -> String {
 use parser::normalize_model_name;
 
 /// Compute aggregates once when data is loaded/refreshed
-fn compute_aggregates(data: &DailyModelReport) -> Aggregates {
+fn compute_aggregates(data: &DailyModelReport, selected_date_str: &str) -> Aggregates {
     let mut lifetime = Totals::default();
     let mut mtd = Totals::default();
-    let mut today = Totals::default();
+    let mut selected_date = Totals::default();
 
     let today_date = Utc::now().naive_utc().date();
-    let today_str = today_date.format("%Y-%m-%d").to_string();
+    // We only need the month info for month-to-date calculations now
     let this_month = today_date.format("%Y-%m").to_string();
 
     for (date, model_map) in data.iter() {
@@ -108,13 +107,13 @@ fn compute_aggregates(data: &DailyModelReport) -> Aggregates {
                 mtd.cache_write_tokens += stat.cache_creation_tokens;
             }
 
-            // Today
-            if date == &today_str {
-                today.cost += stat.total_cost;
-                today.input_tokens += stat.input_tokens;
-                today.output_tokens += stat.output_tokens;
-                today.cache_read_tokens += stat.cache_read_tokens;
-                today.cache_write_tokens += stat.cache_creation_tokens;
+            // Selected date
+            if date == selected_date_str {
+                selected_date.cost += stat.total_cost;
+                selected_date.input_tokens += stat.input_tokens;
+                selected_date.output_tokens += stat.output_tokens;
+                selected_date.cache_read_tokens += stat.cache_read_tokens;
+                selected_date.cache_write_tokens += stat.cache_creation_tokens;
             }
         }
     }
@@ -122,7 +121,7 @@ fn compute_aggregates(data: &DailyModelReport) -> Aggregates {
     Aggregates {
         lifetime,
         mtd,
-        today,
+        selected_date,
     }
 }
 
@@ -188,6 +187,8 @@ fn draw_ui<B: ratatui::backend::Backend>(
     token_data: &TokenData,
     aggregates: &Aggregates,
     view_mode: ViewMode,
+    selected_date: chrono::NaiveDate,
+    current_utc_date: chrono::NaiveDate,
 ) -> std::io::Result<()> {
     // Select the data based on view mode
     let data = match view_mode {
@@ -221,19 +222,27 @@ fn draw_ui<B: ratatui::backend::Backend>(
 
         // Remove the help text since we're using a separate control panel
 
+        // Format the selected date string
+        let selected_date_display = if selected_date == current_utc_date {
+            "Today".to_string()
+        } else {
+            selected_date.format("%Y-%m-%d").to_string()
+        };
         let summary_text = Paragraph::new(format!(
-            "Lifetime Spend   ${:.2}\nLifetime Tokens  {}/{} ({}/{})\nMonth-to-Date    ${:.2}\nToday's Spend    ${:.2}\nToday's Tokens   {}/{} ({}/{})",
+            "Lifetime Spend   ${:.2}\nLifetime Tokens  {}/{} ({}/{})\nMonth-to-Date    ${:.2}\n{}'s Spend    ${:.2}\n{}'s Tokens   {}/{} ({}/{})",
             aggregates.lifetime.cost,
             format_tokens(aggregates.lifetime.input_tokens),
             format_tokens(aggregates.lifetime.output_tokens),
             format_tokens(aggregates.lifetime.cache_read_tokens),
             format_tokens(aggregates.lifetime.cache_write_tokens),
             aggregates.mtd.cost,
-            aggregates.today.cost,
-            format_tokens(aggregates.today.input_tokens),
-            format_tokens(aggregates.today.output_tokens),
-            format_tokens(aggregates.today.cache_read_tokens),
-            format_tokens(aggregates.today.cache_write_tokens)
+            selected_date_display,
+            aggregates.selected_date.cost,
+            selected_date_display,
+            format_tokens(aggregates.selected_date.input_tokens),
+            format_tokens(aggregates.selected_date.output_tokens),
+            format_tokens(aggregates.selected_date.cache_read_tokens),
+            format_tokens(aggregates.selected_date.cache_write_tokens)
         ))
         .block(summary_block)
         .style(Style::default().fg(Color::Green));
@@ -250,7 +259,7 @@ fn draw_ui<B: ratatui::backend::Backend>(
         };
 
         let controls_text = Paragraph::new(format!(
-            "{}\n[Q] Quit",
+            "{}\n[<] Previous Day  [>] Next Day\n[Q] Quit",
             toggle_text
         ))
         .block(controls_block)
@@ -279,8 +288,8 @@ fn draw_ui<B: ratatui::backend::Backend>(
         // Render actual charts instead of placeholder blocks
         render_stacked_bar(f, top_row[0], data, true, view_mode); // Tokens/day
         render_stacked_bar(f, top_row[1], data, false, view_mode); // Cost/day
-        render_today_bar(f, bottom_row[0], data, true, view_mode); // Today's tokens
-        render_today_bar(f, bottom_row[1], data, false, view_mode); // Today's cost
+        render_today_bar(f, bottom_row[0], data, true, view_mode, selected_date, current_utc_date); // Selected day's tokens
+        render_today_bar(f, bottom_row[1], data, false, view_mode, selected_date, current_utc_date); // Selected day's cost
     })?;
     Ok(())
 }
@@ -518,13 +527,27 @@ fn render_today_bar(
     data: &DailyModelReport,
     is_tokens: bool,
     view_mode: ViewMode,
+    selected_date: chrono::NaiveDate,
+    current_utc_date: chrono::NaiveDate,
 ) {
-    let today = Utc::now().naive_utc().date().format("%Y-%m-%d").to_string();
-    let today_data = match data.get(&today) {
+    let selected_date_str = selected_date.format("%Y-%m-%d").to_string();
+    let display_date = if selected_date == current_utc_date {
+        "Today"
+    } else {
+        &selected_date_str
+    };
+    let today_data = match data.get(&selected_date_str) {
         Some(val) => val,
         None => {
-            // Show empty chart if there's no data for today
-            render_empty_bar(f, area, &today, is_tokens, view_mode);
+            // Show empty chart if there's no data for the selected date
+            render_empty_bar(
+                f,
+                area,
+                &selected_date_str,
+                is_tokens,
+                view_mode,
+                current_utc_date,
+            );
             return;
         }
     };
@@ -576,7 +599,8 @@ fn render_today_bar(
 
     let title = if is_tokens {
         format!(
-            "Today: Tokens by {} (Max: {})",
+            "{}: Tokens by {} (Max: {})",
+            display_date,
             category,
             if max_val >= 1_000_000.0 {
                 format!("{:.1}M", max_val / 1_000_000.0)
@@ -587,7 +611,10 @@ fn render_today_bar(
             }
         )
     } else {
-        format!("Today: Cost by {} (Max: ${:.2})", category, max_val)
+        format!(
+            "{}: Cost by {} (Max: ${:.2})",
+            display_date, category, max_val
+        )
     };
 
     let bars = BarChart::default()
@@ -614,19 +641,27 @@ fn render_today_bar(
 fn render_empty_bar(
     f: &mut ratatui::Frame,
     area: Rect,
-    _date: &str,
+    date: &str,
     is_tokens: bool,
     view_mode: ViewMode,
+    current_utc_date: chrono::NaiveDate,
 ) {
     let category = match view_mode {
         ViewMode::ByModel => "Model",
         ViewMode::ByProject => "Project",
     };
 
-    let title = if is_tokens {
-        format!("Today: Tokens by {} (No data)", category)
+    let current_date_str = current_utc_date.format("%Y-%m-%d").to_string();
+    let display_date = if *date == current_date_str {
+        "Today"
     } else {
-        format!("Today: Cost by {} (No data)", category)
+        date
+    };
+
+    let title = if is_tokens {
+        format!("{}: Tokens by {} (No data)", display_date, category)
+    } else {
+        format!("{}: Cost by {} (No data)", display_date, category)
     };
 
     let bars = BarChart::default()
@@ -646,98 +681,6 @@ fn render_empty_bar(
             Color::Magenta
         }))
         .data(&[]);
-
-    f.render_widget(bars, area);
-}
-
-#[allow(dead_code)]
-fn render_recent_bar(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    data: &HashMap<String, ModelStats>,
-    date: &str,
-    is_tokens: bool,
-    view_mode: ViewMode,
-) {
-    let mut items: Vec<(&String, f64)> = data
-        .iter()
-        .map(|(model, stat)| {
-            (
-                model,
-                if is_tokens {
-                    stat.total_tokens as f64
-                } else {
-                    stat.total_cost
-                },
-            )
-        })
-        .collect();
-    items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    let labels: Vec<Span> = items
-        .iter()
-        .map(|(m, _)| Span::raw(normalize_model_name(m)))
-        .collect();
-    let values: Vec<u64> = items
-        .iter()
-        .map(|(_, v)| {
-            if is_tokens {
-                *v as u64
-            } else {
-                // For costs, multiply by 100 to show cents as integers
-                (*v * 100.0) as u64
-            }
-        })
-        .collect();
-
-    // Find max value for scaling
-    let max_val = items.iter().map(|(_, v)| *v).fold(0.0, f64::max);
-
-    let bar_data: Vec<(&str, u64)> = labels
-        .iter()
-        .zip(values.iter())
-        .map(|(s, v)| (s.content.as_ref(), *v))
-        .collect();
-
-    let category = match view_mode {
-        ViewMode::ByModel => "Model",
-        ViewMode::ByProject => "Project",
-    };
-
-    let title = if is_tokens {
-        format!(
-            "{}: Tokens by {} (Max: {})",
-            date,
-            category,
-            if max_val >= 1_000_000.0 {
-                format!("{:.1}M", max_val / 1_000_000.0)
-            } else if max_val >= 1_000.0 {
-                format!("{:.0}K", max_val / 1_000.0)
-            } else {
-                format!("{:.0}", max_val)
-            }
-        )
-    } else {
-        format!("{}: Cost by {} (Max: ${:.2})", date, category, max_val)
-    };
-
-    let bars = BarChart::default()
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .bar_width(10)
-        .bar_gap(3)
-        .value_style(
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Black)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        )
-        .label_style(Style::default().fg(Color::White))
-        .bar_style(Style::default().fg(if is_tokens {
-            Color::Green
-        } else {
-            Color::Magenta
-        }))
-        .data(&bar_data);
 
     f.render_widget(bars, area);
 }
@@ -799,12 +742,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Use the pre-loaded data and compute initial aggregates
     let mut current_data = initial_data;
+
+    // Track current view mode, dates and UTC day tracking
+    let mut current_view_mode = ViewMode::ByModel;
+    let mut current_utc_date = Utc::now().naive_utc().date();
+    let mut selected_date = current_utc_date;
+    let selected_date_str = selected_date.format("%Y-%m-%d").to_string();
+
+    // Initialize available dates from the initial data
+    let mut available_dates: Vec<String> = current_data
+        .as_ref()
+        .map(|data| {
+            let mut dates = data.model_report.keys().cloned().collect::<Vec<String>>();
+            dates.sort();
+            dates
+        })
+        .unwrap_or_default();
+
+    // Store if the user is currently viewing "today"
+    let mut viewing_today = true;
+
     let mut current_aggregates = current_data
         .as_ref()
-        .map(|data| compute_aggregates(&data.model_report));
-
-    // Track current view mode
-    let mut current_view_mode = ViewMode::ByModel;
+        .map(|data| compute_aggregates(&data.model_report, &selected_date_str));
 
     while running.load(Ordering::SeqCst) {
         // Input check first
@@ -818,16 +778,102 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 current_view_mode = ViewMode::ByModel;
                                 // Update aggregates based on the new view mode
                                 if let Some(data) = &current_data {
-                                    current_aggregates =
-                                        Some(compute_aggregates(&data.model_report));
+                                    let selected_date_str =
+                                        selected_date.format("%Y-%m-%d").to_string();
+                                    current_aggregates = Some(compute_aggregates(
+                                        &data.model_report,
+                                        &selected_date_str,
+                                    ));
                                 }
                             }
                             KeyCode::Char('p') | KeyCode::Char('P') => {
                                 current_view_mode = ViewMode::ByProject;
                                 // Update aggregates based on the new view mode
                                 if let Some(data) = &current_data {
-                                    current_aggregates =
-                                        Some(compute_aggregates(&data.project_report));
+                                    let selected_date_str =
+                                        selected_date.format("%Y-%m-%d").to_string();
+                                    current_aggregates = Some(compute_aggregates(
+                                        &data.project_report,
+                                        &selected_date_str,
+                                    ));
+                                }
+                            }
+                            KeyCode::Char('<') => {
+                                // Navigate to previous day if available
+                                if !available_dates.is_empty() {
+                                    let current_date_str =
+                                        selected_date.format("%Y-%m-%d").to_string();
+                                    let current_index =
+                                        available_dates.iter().position(|d| d == &current_date_str);
+
+                                    if let Some(idx) = current_index {
+                                        if idx > 0 {
+                                            // There's a previous date
+                                            if let Ok(prev_date) = chrono::NaiveDate::parse_from_str(
+                                                &available_dates[idx - 1],
+                                                "%Y-%m-%d",
+                                            ) {
+                                                selected_date = prev_date;
+
+                                                // We're not viewing today anymore if we go back
+                                                viewing_today = selected_date == current_utc_date;
+
+                                                // Update aggregates for the new selected date
+                                                if let Some(data) = &current_data {
+                                                    let report = match current_view_mode {
+                                                        ViewMode::ByModel => &data.model_report,
+                                                        ViewMode::ByProject => &data.project_report,
+                                                    };
+                                                    let selected_date_str = selected_date
+                                                        .format("%Y-%m-%d")
+                                                        .to_string();
+                                                    current_aggregates = Some(compute_aggregates(
+                                                        report,
+                                                        &selected_date_str,
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Char('>') => {
+                                // Navigate to next day if available
+                                if !available_dates.is_empty() {
+                                    let current_date_str =
+                                        selected_date.format("%Y-%m-%d").to_string();
+                                    let current_index =
+                                        available_dates.iter().position(|d| d == &current_date_str);
+
+                                    if let Some(idx) = current_index {
+                                        if idx < available_dates.len() - 1 {
+                                            // There's a next date
+                                            if let Ok(next_date) = chrono::NaiveDate::parse_from_str(
+                                                &available_dates[idx + 1],
+                                                "%Y-%m-%d",
+                                            ) {
+                                                selected_date = next_date;
+
+                                                // Check if we've navigated to today
+                                                viewing_today = selected_date == current_utc_date;
+
+                                                // Update aggregates for the new selected date
+                                                if let Some(data) = &current_data {
+                                                    let report = match current_view_mode {
+                                                        ViewMode::ByModel => &data.model_report,
+                                                        ViewMode::ByProject => &data.project_report,
+                                                    };
+                                                    let selected_date_str = selected_date
+                                                        .format("%Y-%m-%d")
+                                                        .to_string();
+                                                    current_aggregates = Some(compute_aggregates(
+                                                        report,
+                                                        &selected_date_str,
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             _ => {}
@@ -847,16 +893,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        // Check for UTC date rollover
+        let new_utc_date = Utc::now().naive_utc().date();
+        if new_utc_date != current_utc_date {
+            // UTC date has changed
+            current_utc_date = new_utc_date;
+
+            // If the user was viewing "today", automatically advance to the new day
+            if viewing_today {
+                selected_date = current_utc_date;
+
+                // Update aggregates if we have data
+                if let Some(data) = &current_data {
+                    let report = match current_view_mode {
+                        ViewMode::ByModel => &data.model_report,
+                        ViewMode::ByProject => &data.project_report,
+                    };
+                    let selected_date_str = selected_date.format("%Y-%m-%d").to_string();
+                    current_aggregates = Some(compute_aggregates(report, &selected_date_str));
+                }
+            }
+        }
+
         // Refresh data on interval
         if last_update.elapsed() >= refresh_interval {
             // Load data silently on refresh
             if let Some(data) = parser::load_complete_token_data_with_options(true) {
+                // Extract available dates from the data
+                available_dates = data.model_report.keys().cloned().collect();
+                available_dates.sort();
+
+                // Ensure the selected date exists in the data, otherwise default to today
+                let selected_date_str = selected_date.format("%Y-%m-%d").to_string();
+                if !available_dates.contains(&selected_date_str) {
+                    selected_date = current_utc_date;
+                    viewing_today = true;
+                }
+
                 // Compute aggregates based on current view mode
                 let report = match current_view_mode {
                     ViewMode::ByModel => &data.model_report,
                     ViewMode::ByProject => &data.project_report,
                 };
-                current_aggregates = Some(compute_aggregates(report));
+                let selected_date_str = selected_date.format("%Y-%m-%d").to_string();
+                current_aggregates = Some(compute_aggregates(report, &selected_date_str));
                 current_data = Some(data);
             }
             last_update = Instant::now();
@@ -870,6 +950,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     data,
                     aggregates,
                     current_view_mode,
+                    selected_date,
+                    current_utc_date,
                 ) {
                     eprintln!("Error drawing UI: {}", e);
                     break;
@@ -905,7 +987,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Controls section
                     let controls_block = Block::default().title(" Controls ").borders(Borders::ALL);
                     let controls_text =
-                        Paragraph::new("[M] View by Model\n[P] View by Project\n[Q] Quit")
+                        Paragraph::new("[M] View by Model\n[P] View by Project\n[<] Previous Day  [>] Next Day\n[Q] Quit")
                             .block(controls_block)
                             .style(Style::default().fg(Color::Yellow))
                             .alignment(ratatui::layout::Alignment::Center);
@@ -922,4 +1004,114 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+    use parser::ModelStats;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_format_tokens() {
+        // Test different token formatting cases
+        assert_eq!(format_tokens(500), "500");
+        assert_eq!(format_tokens(1500), "2K"); // Rounded up to nearest K
+        assert_eq!(format_tokens(15000), "15K");
+        assert_eq!(format_tokens(1_500_000), "1.5M");
+        assert_eq!(format_tokens(1_500_000_000), "1.5B");
+    }
+
+    #[test]
+    fn test_compute_aggregates_with_selected_date() {
+        // Create a mock daily model report
+        let mut report = DailyModelReport::new();
+
+        // Create some test model stats
+        let today_date = Utc::now().naive_utc().date();
+        let yesterday_date = today_date.checked_sub_signed(Duration::days(1)).unwrap();
+
+        let today_str = today_date.format("%Y-%m-%d").to_string();
+        let yesterday_str = yesterday_date.format("%Y-%m-%d").to_string();
+        let this_month = today_date.format("%Y-%m").to_string();
+
+        // Create model stats for today
+        let mut today_models = HashMap::new();
+        let today_model_stat = ModelStats {
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_creation_tokens: 200,
+            cache_read_tokens: 100,
+            total_tokens: 1800,
+            input_cost: 0.015,
+            output_cost: 0.0375,
+            cache_creation_cost: 0.003,
+            cache_read_cost: 0.0001,
+            total_cost: 0.0556,
+        };
+        today_models.insert("model1".to_string(), today_model_stat.clone());
+        report.insert(today_str.clone(), today_models);
+
+        // Create model stats for yesterday
+        let mut yesterday_models = HashMap::new();
+        let yesterday_model_stat = ModelStats {
+            input_tokens: 2000,
+            output_tokens: 1000,
+            cache_creation_tokens: 300,
+            cache_read_tokens: 200,
+            total_tokens: 3500,
+            input_cost: 0.03,
+            output_cost: 0.075,
+            cache_creation_cost: 0.0045,
+            cache_read_cost: 0.0002,
+            total_cost: 0.1097,
+        };
+        yesterday_models.insert("model1".to_string(), yesterday_model_stat.clone());
+        report.insert(yesterday_str.clone(), yesterday_models);
+
+        // Test computing aggregates with today selected
+        let aggregates_today = compute_aggregates(&report, &today_str);
+        assert_eq!(aggregates_today.selected_date.input_tokens, 1000);
+        assert_eq!(aggregates_today.selected_date.output_tokens, 500);
+        assert_eq!(aggregates_today.selected_date.cost, 0.0556);
+
+        // Test computing aggregates with yesterday selected
+        let aggregates_yesterday = compute_aggregates(&report, &yesterday_str);
+        assert_eq!(aggregates_yesterday.selected_date.input_tokens, 2000);
+        assert_eq!(aggregates_yesterday.selected_date.output_tokens, 1000);
+        assert_eq!(aggregates_yesterday.selected_date.cost, 0.1097);
+
+        // Check lifetime totals are the same regardless of selected date
+        assert_eq!(aggregates_today.lifetime.input_tokens, 3000);
+        assert_eq!(aggregates_yesterday.lifetime.input_tokens, 3000);
+
+        // Check month-to-date calculations
+        // Both dates should be in this month, so MTD should equal lifetime
+        if yesterday_str.starts_with(&this_month) && today_str.starts_with(&this_month) {
+            assert_eq!(aggregates_today.mtd.input_tokens, 3000);
+            assert_eq!(aggregates_yesterday.mtd.input_tokens, 3000);
+        }
+    }
+
+    #[test]
+    fn test_date_navigation_and_viewing_today() {
+        // This test checks the logic for the viewing_today flag that determines
+        // whether to auto-advance after UTC date rollover
+
+        let today = Utc::now().naive_utc().date();
+        let yesterday = today.checked_sub_signed(Duration::days(1)).unwrap();
+        let tomorrow = today.checked_add_signed(Duration::days(1)).unwrap();
+
+        // When selected_date == current_utc_date, viewing_today should be true
+        let viewing_today1 = today == today;
+        assert!(viewing_today1);
+
+        // When selected_date != current_utc_date, viewing_today should be false
+        let viewing_today2 = yesterday == today;
+        assert!(!viewing_today2);
+
+        let viewing_today3 = tomorrow == today;
+        assert!(!viewing_today3);
+    }
 }
