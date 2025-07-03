@@ -4,6 +4,12 @@ A real-time terminal dashboard for tracking Claude and OpenAI token usage and co
 
 ![Dashboard Screenshot](screenshot.png)
 
+## Should I Use This?
+
+No.
+
+You're better off using [ccusage](https://github.com/ryoppippi/ccusage) if you're just looking for tracking claude usage. I use this to give me cross tool visibility.
+
 ## Features
 
 - 🔄 **Real-time monitoring** - Updates every 10 seconds
