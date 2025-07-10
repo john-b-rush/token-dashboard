@@ -189,6 +189,7 @@ fn draw_ui<B: ratatui::backend::Backend>(
     view_mode: ViewMode,
     selected_date: chrono::NaiveDate,
     current_utc_date: chrono::NaiveDate,
+    viewing_today: bool,
 ) -> std::io::Result<()> {
     // Select the data based on view mode
     let data = match view_mode {
@@ -258,9 +259,15 @@ fn draw_ui<B: ratatui::backend::Backend>(
             ViewMode::ByProject => "[M] Switch to Model View",
         };
 
+        let navigation_text = if viewing_today {
+            "[<] Previous Day"
+        } else {
+            "[<] Previous Day  [>] Next Day"
+        };
+        
         let controls_text = Paragraph::new(format!(
-            "{}\n[<] Previous Day  [>] Next Day\n[Q] Quit",
-            toggle_text
+            "{}\n{}\n[Q] Quit",
+            toggle_text, navigation_text
         ))
         .block(controls_block)
         .style(Style::default().fg(Color::Yellow))
@@ -952,6 +959,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     current_view_mode,
                     selected_date,
                     current_utc_date,
+                    viewing_today,
                 ) {
                     eprintln!("Error drawing UI: {}", e);
                     break;
